@@ -1,0 +1,93 @@
+<launch>
+  <!-- ============================================================
+       woosh_slam_amcl — Woosh TR-200 AMCL 로컬리제이션 스택
+       ============================================================
+       실행 예시:
+         roslaunch woosh_slam_amcl amcl.launch \
+           robot_ip:=169.254.128.2 \
+           map_file:=/root/catkin_ws/maps/woosh_map.yaml
+
+       맵 파일이 없을 경우 먼저 export_map.py로 생성하세요:
+         rosrun woosh_slam_amcl export_map.py _robot_ip:=169.254.128.2
+       ============================================================ -->
+
+  <!-- 로봇 연결 설정 -->
+  <arg name="robot_ip"          default="169.254.128.2" />
+  <arg name="robot_port"        default="5480" />
+
+  <!-- 맵 파일 경로 (.yaml) -->
+  <arg name="map_file"          default="/root/catkin_ws/maps/woosh_map.yaml" />
+
+  <!-- TF 프레임 이름 -->
+  <arg name="map_frame"         default="map" />
+  <arg name="odom_frame"        default="odom" />
+  <arg name="base_frame"        default="base_link" />
+  <arg name="laser_frame"       default="laser" />
+
+  <!-- 레이저 센서의 base_link 기준 오프셋 (미터/라디안) -->
+  <!-- TR-200의 실제 LiDAR 위치에 맞게 조정하세요 -->
+  <arg name="laser_offset_x"    default="0.0" />
+  <arg name="laser_offset_y"    default="0.0" />
+  <arg name="laser_offset_z"    default="0.25" />
+  <arg name="laser_offset_yaw"  default="0.0" />
+
+  <!-- 센서 브릿지 발행 주기 (Hz) -->
+  <arg name="publish_hz"        default="10.0" />
+
+  <!-- RViz 실행 여부 -->
+  <arg name="launch_rviz"       default="true" />
+  <arg name="rviz_config"       default="$(find woosh_slam_amcl)/rviz/amcl_debug.rviz" />
+
+  <!-- ============================================================
+       1. 정적 TF: base_link → laser
+       ============================================================ -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="base_link_to_laser"
+        args="$(arg laser_offset_x) $(arg laser_offset_y) $(arg laser_offset_z)
+              $(arg laser_offset_yaw) 0.0 0.0
+              $(arg base_frame) $(arg laser_frame)" />
+
+  <!-- ============================================================
+       2. map_server — 저장된 맵 파일 서비스
+       ============================================================ -->
+  <node pkg="map_server" type="map_server" name="map_server"
+        args="$(arg map_file)"
+        output="screen">
+    <param name="frame_id" value="$(arg map_frame)" />
+  </node>
+
+  <!-- ============================================================
+       3. woosh_sensor_bridge — SDK → /scan + /odom + TF
+       ============================================================ -->
+  <node pkg="woosh_slam_amcl" type="woosh_sensor_bridge.py"
+        name="woosh_sensor_bridge"
+        output="screen">
+    <param name="robot_ip"       value="$(arg robot_ip)" />
+    <param name="robot_port"     value="$(arg robot_port)" />
+    <param name="robot_identity" value="amcl_bridge" />
+    <param name="odom_frame"     value="$(arg odom_frame)" />
+    <param name="base_frame"     value="$(arg base_frame)" />
+    <param name="laser_frame"    value="$(arg laser_frame)" />
+    <param name="publish_hz"     value="$(arg publish_hz)" />
+  </node>
+
+  <!-- ============================================================
+       4. amcl — 파티클 필터 로컬리제이션
+       ============================================================ -->
+  <node pkg="amcl" type="amcl" name="amcl" output="screen">
+    <rosparam file="$(find woosh_slam_amcl)/config/amcl_params.yaml" command="load" />
+    <!-- 프레임 이름은 launch 인자로 덮어씀 -->
+    <param name="odom_frame_id"   value="$(arg odom_frame)" />
+    <param name="base_frame_id"   value="$(arg base_frame)" />
+    <param name="global_frame_id" value="$(arg map_frame)" />
+    <param name="scan_topic"      value="/scan" />
+  </node>
+
+  <!-- ============================================================
+       5. RViz (선택적)
+       ============================================================ -->
+  <node if="$(arg launch_rviz)"
+        pkg="rviz" type="rviz" name="amcl_rviz"
+        args="-d $(arg rviz_config)"
+        output="screen" />
+
+</launch>

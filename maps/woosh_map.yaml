@@ -1,0 +1,6 @@
+image: woosh_map.pgm
+resolution: 0.029999999329447746
+origin: [-9.972089767456055, -6.5463032722473145, 0.0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
