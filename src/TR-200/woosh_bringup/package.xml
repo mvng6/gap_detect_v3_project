@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>woosh_bringup</name>
+  <version>0.1.0</version>
+  <description>ROS bringup package for Woosh TR-200 service integration.</description>
+
+  <maintainer email="djlee2@katech.re.kr">LDJ</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>woosh_control</depend>
+  <depend>woosh_robot_py</depend>
+  <depend>woosh_utils</depend>
+
+  <exec_depend>python3-numpy</exec_depend>
+
+  <export/>
+</package>

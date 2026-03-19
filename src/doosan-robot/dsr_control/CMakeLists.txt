@@ -9,10 +9,26 @@ find_package(catkin REQUIRED COMPONENTS
   serial
   roscpp
   actionlib
+  control_msgs
+  sensor_msgs
+  std_msgs
+  std_srvs
+  trajectory_msgs
 )
 catkin_package(
   INCLUDE_DIRS include
-  CATKIN_DEPENDS dsr_msgs controller_manager hardware_interface roscpp serial
+  CATKIN_DEPENDS
+    actionlib
+    control_msgs
+    controller_manager
+    dsr_msgs
+    hardware_interface
+    roscpp
+    sensor_msgs
+    serial
+    std_msgs
+    std_srvs
+    trajectory_msgs
 )
 
 if(NOT DEFINED DRCF_VER)

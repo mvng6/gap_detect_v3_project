@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>main_command</name>
+  <version>0.1.0</version>
+  <description>Top-level coordination scripts for Doosan and Woosh services.</description>
+
+  <maintainer email="djlee2@katech.re.kr">LDJ</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>dsr_msgs</depend>
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>woosh_control</depend>
+
+  <export/>
+</package>

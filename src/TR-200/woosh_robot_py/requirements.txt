@@ -1,0 +1,17 @@
+# 核心依赖
+protobuf==4.21.0
+websockets==12.0
+
+# 异步支持
+asyncio>=3.4.3
+
+# 日志和工具
+typing-extensions>=4.0.0
+python-dateutil>=2.8.2
+
+# 开发工具
+pytest>=7.0.0
+pytest-asyncio>=0.18.0
+black>=22.0.0
+isort>=5.10.0
+mypy>=0.950

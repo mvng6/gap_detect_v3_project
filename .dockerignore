@@ -1,0 +1,42 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# IDE / editor
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# ROS build outputs
+build/
+devel/
+install/
+log/
+.catkin_workspace
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+.eggs/
+
+# Env / temp
+.env
+.env.*
+*.log
+*.tmp
+*.bak
+
+# Optional large/generated assets
+maps/
+tests/
+test_data/
+
+# OS junk
+.DS_Store
+Thumbs.db

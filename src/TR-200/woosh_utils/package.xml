@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>woosh_utils</name>
+  <version>0.1.0</version>
+  <description>Python utility package and ROS scripts for Woosh robot integration.</description>
+
+  <maintainer email="djlee2@katech.re.kr">LDJ</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>rospy</build_depend>
+  <build_depend>woosh_robot_py</build_depend>
+  <build_export_depend>rospy</build_export_depend>
+  <build_export_depend>woosh_robot_py</build_export_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>woosh_robot_py</exec_depend>
+
+  <export/>
+</package>

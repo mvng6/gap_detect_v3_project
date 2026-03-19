@@ -1,0 +1,39 @@
+services:
+  noetic_robot_system_ws:
+    build:
+      context: .
+      dockerfile: Dockerfile.noetic_integration
+
+    container_name: noetic_robot_system_ws
+
+    # ROS1 다중 노드 통신에는 host 네트워크가 가장 단순함
+    network_mode: host
+
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - QT_X11_NO_MITSHM=1
+      # 필요 시 아래 값을 .env 또는 셸에서 NUC IP 기준으로 지정
+      # ROS_MASTER_URI=http://<NUC_IP>:11311
+      # ROS_IP=<NUC_IP>
+
+    volumes:
+      # GUI(X11)
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # catkin workspace source
+      - ./src:/root/catkin_ws/src:rw
+      # 지도 저장/불러오기용 경로를 패키지 종속 없이 일반화
+      - ./maps:/root/catkin_ws/maps:rw
+
+    # Intel iGPU / Mesa 기반 RViz, Gazebo 가속
+    devices:
+      - /dev/dri:/dev/dri
+
+    # Gazebo / RViz 실행 시 shared memory 여유 확보
+    shm_size: "1g"
+
+    stdin_open: true
+    tty: true
+    command: >
+      bash -lc "if [ -f /root/catkin_ws/devel/setup.bash ];
+      then source /root/catkin_ws/devel/setup.bash; fi; exec bash"
+    restart: unless-stopped

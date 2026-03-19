@@ -1,0 +1,77 @@
+FROM ros:noetic-robot
+
+SHELL ["/bin/bash", "-c"]
+WORKDIR /root/catkin_ws
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# NUC(호스트 Ubuntu 24.04) 위에서 ROS Noetic(Focal 계열) 기반 통합 개발용 환경
+# - 두산 로봇: MoveIt / Gazebo / ros_control
+# - TR-200: LiDAR 시각화, SLAM / Navigation, topic/service 연동
+# - RViz / rqt GUI 지원
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    curl \
+    wget \
+    python3-numpy \
+    python3-pip \
+    python3-catkin-tools \
+    python3-rosdep \
+    python3-vcstool \
+    iputils-ping \
+    net-tools \
+    iproute2 \
+    mesa-utils \
+    libgl1-mesa-glx \
+    libgl1-mesa-dri \
+    ros-noetic-rviz \
+    ros-noetic-rqt \
+    ros-noetic-rqt-common-plugins \
+    ros-noetic-joint-state-publisher \
+    ros-noetic-joint-state-publisher-gui \
+    ros-noetic-robot-state-publisher \
+    ros-noetic-tf2-tools \
+    ros-noetic-xacro \
+    ros-noetic-moveit \
+    ros-noetic-moveit-visual-tools \
+    ros-noetic-gazebo-ros-pkgs \
+    ros-noetic-gazebo-ros-control \
+    ros-noetic-ros-control \
+    ros-noetic-ros-controllers \
+    ros-noetic-joint-state-controller \
+    ros-noetic-effort-controllers \
+    ros-noetic-position-controllers \
+    ros-noetic-serial \
+    ros-noetic-control-msgs \
+    ros-noetic-trajectory-msgs \
+    ros-noetic-map-server \
+    ros-noetic-gmapping \
+    ros-noetic-slam-toolbox \
+    ros-noetic-navigation \
+    ros-noetic-amcl \
+    ros-noetic-teb-local-planner \
+    ros-noetic-robot-localization \
+    ros-noetic-teleop-twist-keyboard \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install --no-cache-dir \
+    "protobuf==4.21.0" \
+    "websockets==12.0" \
+    "python-dateutil>=2.8.2" \
+    "typing-extensions>=4.0.0"
+
+COPY src /root/catkin_ws/src
+
+RUN mkdir -p /root/catkin_ws/maps && \
+    rosdep init 2>/dev/null || true && \
+    rosdep update && \
+    source /opt/ros/noetic/setup.bash && \
+    rosdep install --from-paths src --ignore-src --rosdistro noetic -r -y && \
+    catkin config --extend /opt/ros/noetic --cmake-args -DCMAKE_BUILD_TYPE=Release && \
+    catkin build --no-status --summarize && \
+    echo 'source /opt/ros/noetic/setup.bash' >> /root/.bashrc && \
+    echo 'if [ -f /root/catkin_ws/devel/setup.bash ]; then source /root/catkin_ws/devel/setup.bash; fi' >> /root/.bashrc
+
+CMD ["bash"]
