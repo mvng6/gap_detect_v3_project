@@ -16,7 +16,7 @@
   <depend>rospy</depend>
   <depend>std_msgs</depend>
   <depend>visualization_msgs</depend>
-  <depend>woosh_control</depend>
+  <depend>woosh_msgs</depend>
   <depend>woosh_robot_py</depend>
   <depend>woosh_utils</depend>
 

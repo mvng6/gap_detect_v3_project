@@ -5,11 +5,11 @@ find_package(catkin REQUIRED COMPONENTS
   dsr_msgs
   rospy
   std_msgs
-  woosh_control
+  woosh_msgs
 )
 
 catkin_package(
-  CATKIN_DEPENDS dsr_msgs rospy std_msgs woosh_control
+  CATKIN_DEPENDS dsr_msgs rospy std_msgs woosh_msgs
 )
 
 catkin_install_python(PROGRAMS

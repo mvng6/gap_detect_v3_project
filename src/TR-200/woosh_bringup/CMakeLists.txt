@@ -7,13 +7,13 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
   visualization_msgs
-  woosh_control
+  woosh_msgs
   woosh_robot_py
   woosh_utils
 )
 
 catkin_package(
-  CATKIN_DEPENDS geometry_msgs nav_msgs rospy std_msgs visualization_msgs woosh_control woosh_robot_py woosh_utils
+  CATKIN_DEPENDS geometry_msgs nav_msgs rospy std_msgs visualization_msgs woosh_msgs woosh_robot_py woosh_utils
 )
 
 catkin_install_python(PROGRAMS

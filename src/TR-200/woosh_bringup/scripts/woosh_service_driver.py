@@ -7,6 +7,10 @@ import math
 import numpy as np
 import sys
 import os
+import shutil
+import signal
+import subprocess
+import atexit
 from queue import Queue, Empty
 from threading import Thread
 
@@ -28,7 +32,7 @@ except ImportError:
         sys.path.insert(0, woosh_utils_src_dir)
     from woosh_utils import print_battery_status
 
-from woosh_control.srv import MobilePositionTwist, MobilePositionTwistResponse
+from woosh_msgs.srv import MoveMobile, MoveMobileResponse
 from woosh_robot import WooshRobot
 from woosh_interface import CommuSettings, NO_PRINT, FULL_PRINT
 from woosh.proto.robot.robot_pack_pb2 import Twist, ExecTask
@@ -428,19 +432,152 @@ class SmoothTwistController:
 
 # 전역
 controller = None
+rviz_debug_process = None
+rviz_process = None
+
+
+def parse_cli_args(argv):
+    """`rviz_on` 사용자 플래그만 분리하고 나머지는 ROS argv로 유지한다."""
+    launch_rviz = False
+    filtered_argv = [argv[0]]
+
+    for arg in argv[1:]:
+        if arg.lower() in {"rviz_on", "--rviz_on"}:
+            launch_rviz = True
+            continue
+        filtered_argv.append(arg)
+
+    return launch_rviz, filtered_argv
+
+
+def find_package_dir():
+    source_candidate = os.path.abspath(os.path.join(script_dir, ".."))
+    if os.path.isfile(os.path.join(source_candidate, "package.xml")):
+        return source_candidate
+
+    try:
+        import rospkg
+
+        return rospkg.RosPack().get_path("woosh_bringup")
+    except Exception:
+        return source_candidate
+
+
+def find_debug_script_path():
+    candidates = [
+        os.path.join(script_dir, "woosh_rviz_debug.py"),
+        os.path.join(find_package_dir(), "scripts", "woosh_rviz_debug.py"),
+    ]
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    return None
+
+
+def find_rviz_config_path():
+    candidates = [
+        os.path.abspath(os.path.join(script_dir, "../rviz/woosh_rviz_debug.rviz")),
+        os.path.join(find_package_dir(), "rviz", "woosh_rviz_debug.rviz"),
+    ]
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    return None
+
+
+def find_rviz_binary():
+    rviz_bin = shutil.which("rviz")
+    if rviz_bin:
+        return rviz_bin
+
+    fallback = "/opt/ros/noetic/bin/rviz"
+    if os.path.isfile(fallback):
+        return fallback
+
+    return None
+
+
+def terminate_process_tree(process, name):
+    if process is None:
+        return
+
+    if process.poll() is not None:
+        return
+
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        rospy.loginfo("%s 종료 요청 완료", name)
+    except ProcessLookupError:
+        pass
+    except Exception as exc:
+        rospy.logwarn("%s 종료 중 예외: %s", name, exc)
+
+
+def stop_rviz_support():
+    global rviz_debug_process, rviz_process
+
+    terminate_process_tree(rviz_process, "RViz")
+    terminate_process_tree(rviz_debug_process, "RViz 디버그 노드")
+
+    rviz_process = None
+    rviz_debug_process = None
+
+
+def start_rviz_support():
+    global rviz_debug_process, rviz_process
+
+    debug_script = find_debug_script_path()
+    rviz_config = find_rviz_config_path()
+    rviz_bin = find_rviz_binary()
+
+    if debug_script is None:
+        rospy.logwarn("`woosh_rviz_debug.py`를 찾지 못해 RViz 지원을 시작하지 않습니다.")
+        return
+
+    if rviz_config is None:
+        rospy.logwarn("RViz 설정 파일을 찾지 못해 RViz 지원을 시작하지 않습니다.")
+        return
+
+    if rviz_bin is None:
+        rospy.logwarn("`rviz` 실행 파일을 찾지 못했습니다. `rviz_on` 요청은 건너뜁니다.")
+        return
+
+    robot_ip = rospy.get_param("~robot_ip", "169.254.128.2")
+    robot_port = rospy.get_param("~robot_port", 5480)
+
+    debug_cmd = [
+        sys.executable,
+        debug_script,
+        f"_robot_ip:={robot_ip}",
+        f"_robot_port:={robot_port}",
+        "_robot_identity:=rviz_debug",
+    ]
+    rviz_cmd = [rviz_bin, "-d", rviz_config]
+
+    try:
+        rviz_debug_process = subprocess.Popen(debug_cmd, start_new_session=True)
+        rviz_process = subprocess.Popen(rviz_cmd, start_new_session=True)
+        rospy.loginfo("`rviz_on` 옵션 감지: RViz 디버그 창을 함께 시작합니다.")
+    except Exception as exc:
+        rospy.logwarn("RViz 지원 시작 실패: %s", exc)
+        stop_rviz_support()
 
 
 def service_handler(req):
     global controller
     if controller is None:
-        return MobilePositionTwistResponse(False, "서버 초기화 중")
+        return MoveMobileResponse(False, "서버 초기화 중")
 
     controller.command_queue.put(req.distance)
     try:
         success, msg = controller.result_queue.get(timeout=15.0)
-        return MobilePositionTwistResponse(success, msg)
+        return MoveMobileResponse(success, msg)
     except Empty:
-        return MobilePositionTwistResponse(False, "타임아웃")
+        return MoveMobileResponse(False, "타임아웃")
 
 
 def run_asyncio():
@@ -464,14 +601,22 @@ def run_asyncio():
 
 
 if __name__ == "__main__":
-    rospy.init_node('mobile_positiontwist_server', anonymous=False)
+    enable_rviz, init_argv = parse_cli_args(sys.argv)
+
+    rospy.init_node('mobile_move_server', anonymous=False, argv=init_argv)
+    rospy.on_shutdown(stop_rviz_support)
+    atexit.register(stop_rviz_support)
 
     thread = Thread(target=run_asyncio, daemon=True)
     thread.start()
 
-    rospy.Service('mobile_positiontwist', MobilePositionTwist, service_handler)
+    rospy.Service('mobile_move', MoveMobile, service_handler)
+
+    if enable_rviz:
+        start_rviz_support()
 
     rospy.loginfo("서버 시작됨! (정/역방향 정밀 제어 - 작은 이동 최적화)")
-    rospy.loginfo("rosservice call /mobile_positiontwist \"{distance: 0.3}\"")
-    rospy.loginfo("rosservice call /mobile_positiontwist \"{distance: -0.3}\"")
+    rospy.loginfo("rosservice call /mobile_move \"{distance: 0.3}\"")
+    rospy.loginfo("rosservice call /mobile_move \"{distance: -0.3}\"")
+    rospy.loginfo("RViz를 함께 띄우려면: rosrun woosh_bringup woosh_service_driver.py rviz_on")
     rospy.spin()

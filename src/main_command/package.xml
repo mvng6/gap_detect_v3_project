@@ -12,7 +12,7 @@
   <depend>dsr_msgs</depend>
   <depend>rospy</depend>
   <depend>std_msgs</depend>
-  <depend>woosh_control</depend>
+  <depend>woosh_msgs</depend>
 
   <export/>
 </package>

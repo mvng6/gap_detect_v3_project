@@ -25,6 +25,7 @@ Example:
 
 import asyncio
 import io
+import logging
 import math
 import os
 import sys
@@ -69,6 +70,10 @@ class WooshRvizDebugNode:
         self.publish_hz = max(1.0, float(rospy.get_param("~publish_hz", 5.0)))
         self.state_poll_sec = max(0.5, float(rospy.get_param("~state_poll_sec", 1.0)))
         self.scene_refresh_sec = max(1.0, float(rospy.get_param("~scene_refresh_sec", 5.0)))
+        self.health_timeout_sec = max(
+            self.state_poll_sec * 3.0,
+            float(rospy.get_param("~health_timeout_sec", 3.0)),
+        )
         self.trace_length = max(10, int(rospy.get_param("~trace_length", 500)))
         self.trace_min_distance = max(0.0, float(rospy.get_param("~trace_min_distance", 0.03)))
         self.publish_scan_points = bool(rospy.get_param("~publish_scan_points", True))
@@ -78,10 +83,12 @@ class WooshRvizDebugNode:
         self.footprint_width = float(rospy.get_param("~footprint_width", 0.45))
 
         self.robot = None
+        self.sdk_connected = False
         self.last_state_poll = rospy.Time(0)
         self.last_scene_refresh = rospy.Time(0)
         self.scene_dirty = True
         self.cached_scene_key = None
+        self.health_monitor_started_at = rospy.Time(0)
 
         self.current_scene_name = self.scene_name_override
         self.current_map_name = self.map_name_override
@@ -93,6 +100,15 @@ class WooshRvizDebugNode:
         self.latest_model_points = []
         self.initial_localized_pose = None
         self.trace_points = deque(maxlen=self.trace_length)
+        self.monitored_topics = {
+            "scene": "Scene",
+            "pose": "PoseSpeed",
+            "nav_path": "NavPath",
+        }
+        if self.publish_scan_points:
+            self.monitored_topics["scan"] = "ScannerData"
+        self.last_topic_update = {name: None for name in self.monitored_topics}
+        self.reported_stale_topics = set()
 
         self.map_pub = rospy.Publisher(
             f"{self.topic_prefix}/map", OccupancyGrid, queue_size=1, latch=True
@@ -113,17 +129,82 @@ class WooshRvizDebugNode:
             f"{self.topic_prefix}/dynamic_markers", MarkerArray, queue_size=10
         )
 
+    def _create_sdk_logger(self):
+        logger = logging.getLogger(f"{self.robot_identity}.sdk")
+        logger.setLevel(logging.CRITICAL)
+        logger.propagate = False
+        logger.handlers = []
+        logger.addHandler(logging.NullHandler())
+        return logger
+
+    def _reset_health_monitor(self):
+        self.health_monitor_started_at = rospy.Time.now()
+        self.reported_stale_topics.clear()
+        for topic_name in self.last_topic_update:
+            self.last_topic_update[topic_name] = None
+
+    def _mark_topic_alive(self, topic_name):
+        if topic_name not in self.last_topic_update:
+            return
+        self.last_topic_update[topic_name] = rospy.Time.now()
+        self.reported_stale_topics.discard(topic_name)
+
+    def _check_data_health(self):
+        if not self.sdk_connected or self.health_monitor_started_at == rospy.Time(0):
+            return
+
+        now = rospy.Time.now()
+        newly_stale = []
+        for topic_name, topic_label in self.monitored_topics.items():
+            last_update = self.last_topic_update.get(topic_name)
+            if last_update is None:
+                elapsed = (now - self.health_monitor_started_at).to_sec()
+            else:
+                elapsed = (now - last_update).to_sec()
+
+            if elapsed >= self.health_timeout_sec and topic_name not in self.reported_stale_topics:
+                self.reported_stale_topics.add(topic_name)
+                newly_stale.append(topic_label)
+
+        if newly_stale:
+            rospy.logwarn(
+                "RViz 디버그 데이터 연결 끊김 감지: %s 응답이 %.1f초 이상 없습니다.",
+                ", ".join(newly_stale),
+                self.health_timeout_sec,
+            )
+
+    def _on_sdk_connection_change(self, connected):
+        if self.sdk_connected == connected:
+            return
+
+        self.sdk_connected = connected
+        self._reset_health_monitor()
+
+        if connected:
+            self.last_state_poll = rospy.Time(0)
+            self.last_scene_refresh = rospy.Time(0)
+            self.scene_dirty = True
+            return
+
+        rospy.logwarn("Woosh SDK 연결이 끊어졌습니다. RViz 디버그 데이터 수신을 기다리는 중입니다.")
+
     async def connect(self):
         settings = CommuSettings(
             addr=self.robot_ip,
             port=self.robot_port,
             identity=self.robot_identity,
+            logger=self._create_sdk_logger(),
+            log_level="CRITICAL",
+            log_to_console=False,
+            log_to_file=False,
+            connect_status_callback=self._on_sdk_connection_change,
         )
         self.robot = WooshRobot(settings)
 
         ok = await self.robot.run()
         if not ok:
             raise RuntimeError("Woosh SDK 연결 시작에 실패했습니다.")
+        self.sdk_connected = True
 
         info, ok, msg = await self.robot.robot_info_req(RobotInfo(), NO_PRINT, NO_PRINT)
         if not ok:
@@ -141,6 +222,9 @@ class WooshRvizDebugNode:
         self._update_pose_state(info.pose_speed)
 
         await self._subscribe_topics()
+        self._reset_health_monitor()
+        self._mark_topic_alive("scene")
+        self._mark_topic_alive("pose")
         await self._seed_requests()
 
     async def _subscribe_topics(self):
@@ -172,51 +256,51 @@ class WooshRvizDebugNode:
 
     async def _request_pose_once(self):
         try:
-            pose_speed, ok, msg = await self.robot.robot_pose_speed_req(
+            pose_speed, ok, _ = await self.robot.robot_pose_speed_req(
                 PoseSpeed(), NO_PRINT, NO_PRINT
             )
+            if ok:
+                self._mark_topic_alive("pose")
             if ok and pose_speed:
                 self._update_pose_state(pose_speed)
-            else:
-                rospy.logwarn_throttle(10.0, "PoseSpeed 요청 실패: %s", msg)
-        except Exception as exc:
-            rospy.logwarn_throttle(10.0, "PoseSpeed 요청 예외: %s", exc)
+        except Exception:
+            pass
 
     async def _request_scene_once(self):
         try:
-            scene_msg, ok, msg = await self.robot.robot_scene_req(
+            scene_msg, ok, _ = await self.robot.robot_scene_req(
                 Scene(), NO_PRINT, NO_PRINT
             )
+            if ok:
+                self._mark_topic_alive("scene")
             if ok and scene_msg:
                 self._update_scene_state(scene_msg)
-            else:
-                rospy.logwarn_throttle(10.0, "Scene 요청 실패: %s", msg)
-        except Exception as exc:
-            rospy.logwarn_throttle(10.0, "Scene 요청 예외: %s", exc)
+        except Exception:
+            pass
 
     async def _request_nav_path_once(self):
         try:
-            nav_path, ok, msg = await self.robot.robot_nav_path_req(
+            nav_path, ok, _ = await self.robot.robot_nav_path_req(
                 NavPath(), NO_PRINT, NO_PRINT
             )
+            if ok:
+                self._mark_topic_alive("nav_path")
             if ok and nav_path:
                 self.latest_nav_path = nav_path
-            elif msg:
-                rospy.loginfo_throttle(15.0, "NavPath 요청 응답: %s", msg)
-        except Exception as exc:
-            rospy.logwarn_throttle(15.0, "NavPath 요청 예외: %s", exc)
+        except Exception:
+            pass
 
     async def _request_scan_once(self):
         try:
-            scan, ok, msg = await self.robot.scanner_data_req(
+            scan, ok, _ = await self.robot.scanner_data_req(
                 ScannerData(), NO_PRINT, NO_PRINT
             )
+            if ok:
+                self._mark_topic_alive("scan")
             if ok and scan:
                 self.latest_scan = scan
-            elif msg:
-                rospy.loginfo_throttle(15.0, "ScannerData 요청 응답: %s", msg)
-        except Exception as exc:
-            rospy.logwarn_throttle(15.0, "ScannerData 요청 예외: %s", exc)
+        except Exception:
+            pass
 
     def _on_scene(self, scene_msg):
         self._update_scene_state(scene_msg)
@@ -225,15 +309,18 @@ class WooshRvizDebugNode:
         self._update_pose_state(pose_speed)
 
     def _on_nav_path(self, nav_path):
+        self._mark_topic_alive("nav_path")
         self.latest_nav_path = nav_path
 
     def _on_model(self, model):
         self._update_model_state(model)
 
     def _on_scan(self, scan):
+        self._mark_topic_alive("scan")
         self.latest_scan = scan
 
     def _update_scene_state(self, scene_msg):
+        self._mark_topic_alive("scene")
         new_scene = self.scene_name_override or scene_msg.scene_name
         new_map = self.map_name_override or scene_msg.map_name
         new_map_id = scene_msg.map_id
@@ -262,6 +349,7 @@ class WooshRvizDebugNode:
     def _update_pose_state(self, pose_speed):
         if not pose_speed:
             return
+        self._mark_topic_alive("pose")
 
         previous_map_id = self.current_map_id
         self.latest_pose = pose_speed
@@ -321,11 +409,13 @@ class WooshRvizDebugNode:
         try:
             scene_data, ok, msg = await self.robot.scene_data_req(req, NO_PRINT, NO_PRINT)
         except Exception as exc:
-            rospy.logwarn("scene_data_req 예외: %s", exc)
+            if self.sdk_connected:
+                rospy.logwarn_throttle(15.0, "scene_data_req 예외: %s", exc)
             return
 
         if not ok or not scene_data:
-            rospy.logwarn("scene_data_req 실패: %s", msg)
+            if self.sdk_connected:
+                rospy.logwarn_throttle(15.0, "scene_data_req 실패: %s", msg)
             return
         if not scene_data.maps:
             rospy.logwarn("scene '%s' 에 맵 데이터가 없습니다.", scene_name)
@@ -923,6 +1013,7 @@ class WooshRvizDebugNode:
             self._publish_trace()
             self._publish_nav_path()
             self.dynamic_markers_pub.publish(self._build_dynamic_markers())
+            self._check_data_health()
             await asyncio.sleep(rate)
 
     async def shutdown(self):
