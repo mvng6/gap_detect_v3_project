@@ -629,6 +629,11 @@ def start_amcl_support(robot_ip, robot_port, map_file):
         rospy.logwarn("amcl.launch 파일을 찾을 수 없습니다. AMCL을 시작하지 않습니다.")
         return
 
+    # rviz_config 경로를 명시적으로 전달하여 $(find woosh_slam_amcl) 평가 우회
+    # roslaunch는 launch_rviz:=false 이더라도 모든 arg default 값을 파싱 시 평가하므로
+    # 패키지를 찾지 못하면 오류 발생 → 실제 파일 경로를 직접 지정
+    amcl_rviz_config = find_amcl_rviz_config_path()
+
     cmd = [
         "roslaunch", amcl_launch,
         f"robot_ip:={robot_ip}",
@@ -636,6 +641,9 @@ def start_amcl_support(robot_ip, robot_port, map_file):
         f"map_file:={map_file}",
         "launch_rviz:=false",   # RViz는 rviz_on 경로에서 별도 실행
     ]
+
+    if amcl_rviz_config:
+        cmd.append(f"rviz_config:={amcl_rviz_config}")
 
     try:
         amcl_process = subprocess.Popen(cmd, start_new_session=True)
