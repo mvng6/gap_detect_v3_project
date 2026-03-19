@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>woosh_slam_amcl</name>
+  <version>0.1.0</version>
+  <description>AMCL localization package for Woosh TR-200 mobile robot.</description>
+
+  <maintainer email="djlee2@katech.re.kr">LDJ</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>amcl</depend>
+  <depend>geometry_msgs</depend>
+  <depend>map_server</depend>
+  <depend>nav_msgs</depend>
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>woosh_robot_py</depend>
+
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-pil</exec_depend>
+  <exec_depend>rviz</exec_depend>
+
+  <export/>
+</package>

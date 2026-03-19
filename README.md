@@ -32,7 +32,7 @@ roscore
 docker exec -it noetic_robot_system_ws bash
 cd /root/catkin_ws
 source devel/setup.bash
-roslaunch woosh_slam slam_gmapping.launch robot_ip:=169.254.128.2
+roslaunch dsr_launcher single_robot_rviz.launch model:=a0912 mode:=real server_ip:=192.168.137.100
 ```
 
 ### 터미널 3. Docker 진입 + 소싱 + 모바일로봇(TR-200) 연결
@@ -44,14 +44,26 @@ source devel/setup.bash
 rosrun woosh_bringup woosh_service_driver.py
 ```
 
-현재 맵과 로봇을 RViz에서 실시간으로 확인하려면 마지막 명령을 아래처럼 실행합니다.
+센서 데이터와 로봇 상태를 RViz에서 실시간으로 확인하려면:
 
 ```bash
-docker exec -it noetic_robot_system_ws bash
-cd /root/catkin_ws
-source devel/setup.bash
 rosrun woosh_bringup woosh_service_driver.py rviz_on
 ```
+
+AMCL 로컬리제이션(위치 추정)과 함께 실행하려면:
+
+```bash
+# 맵 파일이 이미 있는 경우
+rosrun woosh_bringup woosh_service_driver.py amcl
+
+# 맵 파일 경로를 직접 지정하는 경우
+rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/root/catkin_ws/maps/my_map.yaml
+```
+
+> **AMCL 사전 준비**: 맵 파일이 없으면 아래 명령으로 먼저 생성합니다.
+> ```bash
+> rosrun woosh_slam_amcl export_map.py _robot_ip:=169.254.128.2 _output_dir:=/root/catkin_ws/maps
+> ```
 
 ### 터미널 4. Docker 진입 + 소싱 + 통합 동작 실행
 
@@ -104,7 +116,14 @@ src/
     ├── woosh_robot_py/    # WebSocket SDK 래퍼
     ├── woosh_bringup/     # ROS 노드 + 런치 파일
     ├── woosh_msgs/        # 커스텀 서비스 정의
-    └── woosh_utils/       # 유틸리티 (배터리 상태 등)
+    ├── woosh_utils/       # 유틸리티 (배터리 상태 등)
+    └── woosh_SLAM/        # SLAM 알고리즘 패키지 모음
+        └── AMCL/          # woosh_slam_amcl — AMCL 로컬리제이션
+            ├── scripts/   # woosh_sensor_bridge.py, export_map.py
+            ├── launch/    # amcl.launch
+            ├── config/    # amcl_params.yaml
+            ├── rviz/      # amcl_debug.rviz
+            └── docs/      # 상세 문서
 ```
 
 ---
@@ -155,6 +174,29 @@ source devel/setup.bash
 # RViz 디버그 모드 (시각화 + 로봇 상태 확인)
 roslaunch woosh_bringup woosh_rviz_debug.launch robot_ip:=169.254.128.2
 ```
+
+### AMCL 로컬리제이션 (woosh_slam_amcl)
+
+AMCL(Adaptive Monte Carlo Localization)은 사전에 제작된 맵 위에서 로봇의 위치를 실시간으로 추정합니다.
+
+```bash
+# 1단계: 맵 내보내기 (로봇에서 맵 파일 생성 — 최초 1회)
+rosrun woosh_slam_amcl export_map.py \
+  _robot_ip:=169.254.128.2 \
+  _output_dir:=/root/catkin_ws/maps \
+  _map_name:=woosh_map
+
+# 2단계-A: AMCL 스택 단독 실행 (RViz 포함)
+roslaunch woosh_slam_amcl amcl.launch \
+  robot_ip:=169.254.128.2 \
+  map_file:=/root/catkin_ws/maps/woosh_map.yaml
+
+# 2단계-B: woosh_service_driver 와 통합 실행 (권장)
+rosrun woosh_bringup woosh_service_driver.py amcl \
+  map_file:=/root/catkin_ws/maps/woosh_map.yaml
+```
+
+> 자세한 내용은 [`src/TR-200/woosh_SLAM/AMCL/docs/amcl_guide.md`](src/TR-200/woosh_SLAM/AMCL/docs/amcl_guide.md)를 참조하세요.
 
 ### 두산 협동로봇
 
@@ -221,8 +263,9 @@ a0509, **a0912**, e0509, h2017, h2515, m0609, m0617, m1013, m1509
 - [x] Woosh 모바일로봇 연결 및 기초 구동
 - [x] RViz 디버그 시각화
 - [x] 두 로봇 통합 제어 기초 프레임
-- [ ] SLAM (지도 생성)
-- [ ] 자율 내비게이션 (경로 계획)
+- [x] AMCL 로컬리제이션 (맵 기반 위치 추정)
+- [ ] GMapping / Cartographer (온라인 지도 생성)
+- [ ] 자율 내비게이션 (경로 계획 — move_base)
 - [ ] 갭 감지 알고리즘 개발
 - [ ] 협동 작업 시나리오 구현
 

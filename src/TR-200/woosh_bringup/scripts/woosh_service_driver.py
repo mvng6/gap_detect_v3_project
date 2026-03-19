@@ -434,20 +434,30 @@ class SmoothTwistController:
 controller = None
 rviz_debug_process = None
 rviz_process = None
+amcl_process = None
 
 
 def parse_cli_args(argv):
-    """`rviz_on` 사용자 플래그만 분리하고 나머지는 ROS argv로 유지한다."""
+    """`rviz_on` / `amcl` 사용자 플래그를 분리하고 나머지는 ROS argv로 유지한다."""
     launch_rviz = False
+    enable_amcl = False
+    map_file = None
     filtered_argv = [argv[0]]
 
     for arg in argv[1:]:
         if arg.lower() in {"rviz_on", "--rviz_on"}:
             launch_rviz = True
             continue
+        if arg.lower() in {"amcl", "--amcl"}:
+            enable_amcl = True
+            launch_rviz = True  # AMCL은 rviz_on을 내포
+            continue
+        if arg.lower().startswith("map_file:="):
+            map_file = arg[len("map_file:="):]
+            continue
         filtered_argv.append(arg)
 
-    return launch_rviz, filtered_argv
+    return launch_rviz, enable_amcl, map_file, filtered_argv
 
 
 def find_package_dir():
@@ -489,6 +499,42 @@ def find_rviz_config_path():
     return None
 
 
+def find_amcl_rviz_config_path():
+    candidates = [
+        os.path.abspath(os.path.join(script_dir, "../../woosh_SLAM/AMCL/rviz/amcl_debug.rviz")),
+    ]
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    try:
+        import rospkg
+        return os.path.join(
+            rospkg.RosPack().get_path("woosh_slam_amcl"), "rviz", "amcl_debug.rviz"
+        )
+    except Exception:
+        return None
+
+
+def find_amcl_launch_path():
+    candidates = [
+        os.path.abspath(os.path.join(script_dir, "../../woosh_SLAM/AMCL/launch/amcl.launch")),
+    ]
+
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    try:
+        import rospkg
+        return os.path.join(
+            rospkg.RosPack().get_path("woosh_slam_amcl"), "launch", "amcl.launch"
+        )
+    except Exception:
+        return None
+
+
 def find_rviz_binary():
     rviz_bin = shutil.which("rviz")
     if rviz_bin:
@@ -517,6 +563,12 @@ def terminate_process_tree(process, name):
         rospy.logwarn("%s 종료 중 예외: %s", name, exc)
 
 
+def stop_amcl_support():
+    global amcl_process
+    terminate_process_tree(amcl_process, "AMCL 스택")
+    amcl_process = None
+
+
 def stop_rviz_support():
     global rviz_debug_process, rviz_process
 
@@ -526,20 +578,53 @@ def stop_rviz_support():
     rviz_process = None
     rviz_debug_process = None
 
+    stop_amcl_support()
 
-def start_rviz_support():
+
+def start_amcl_support(robot_ip, robot_port, map_file):
+    """AMCL 스택(sensor_bridge + map_server + amcl)을 roslaunch로 시작한다."""
+    global amcl_process
+
+    amcl_launch = find_amcl_launch_path()
+    if amcl_launch is None:
+        rospy.logwarn("amcl.launch 파일을 찾을 수 없습니다. AMCL을 시작하지 않습니다.")
+        return
+
+    cmd = [
+        "roslaunch", amcl_launch,
+        f"robot_ip:={robot_ip}",
+        f"robot_port:={robot_port}",
+        f"map_file:={map_file}",
+        "launch_rviz:=false",   # RViz는 rviz_on 경로에서 별도 실행
+    ]
+
+    try:
+        amcl_process = subprocess.Popen(cmd, start_new_session=True)
+        rospy.loginfo("AMCL 스택 시작 (map_file=%s)", map_file)
+    except Exception as exc:
+        rospy.logwarn("AMCL 스택 시작 실패: %s", exc)
+
+
+def start_rviz_support(use_amcl_rviz=False):
     global rviz_debug_process, rviz_process
 
     debug_script = find_debug_script_path()
-    rviz_config = find_rviz_config_path()
     rviz_bin = find_rviz_binary()
+
+    # AMCL 모드면 amcl_debug.rviz, 아니면 woosh_rviz_debug.rviz 사용
+    if use_amcl_rviz:
+        rviz_config = find_amcl_rviz_config_path()
+        config_label = "amcl_debug.rviz"
+    else:
+        rviz_config = find_rviz_config_path()
+        config_label = "woosh_rviz_debug.rviz"
 
     if debug_script is None:
         rospy.logwarn("`woosh_rviz_debug.py`를 찾지 못해 RViz 지원을 시작하지 않습니다.")
         return
 
     if rviz_config is None:
-        rospy.logwarn("RViz 설정 파일을 찾지 못해 RViz 지원을 시작하지 않습니다.")
+        rospy.logwarn("RViz 설정 파일(%s)을 찾지 못해 RViz 지원을 시작하지 않습니다.", config_label)
         return
 
     if rviz_bin is None:
@@ -561,7 +646,9 @@ def start_rviz_support():
     try:
         rviz_debug_process = subprocess.Popen(debug_cmd, start_new_session=True)
         rviz_process = subprocess.Popen(rviz_cmd, start_new_session=True)
-        rospy.loginfo("`rviz_on` 옵션 감지: RViz 디버그 창을 함께 시작합니다.")
+        rospy.loginfo(
+            "RViz 디버그 창 시작 (설정: %s)", config_label
+        )
     except Exception as exc:
         rospy.logwarn("RViz 지원 시작 실패: %s", exc)
         stop_rviz_support()
@@ -601,7 +688,7 @@ def run_asyncio():
 
 
 if __name__ == "__main__":
-    enable_rviz, init_argv = parse_cli_args(sys.argv)
+    enable_rviz, enable_amcl, map_file, init_argv = parse_cli_args(sys.argv)
 
     rospy.init_node('mobile_move_server', anonymous=False, argv=init_argv)
     rospy.on_shutdown(stop_rviz_support)
@@ -613,10 +700,21 @@ if __name__ == "__main__":
     rospy.Service('mobile_move', MoveMobile, service_handler)
 
     if enable_rviz:
-        start_rviz_support()
+        start_rviz_support(use_amcl_rviz=enable_amcl)
+
+    if enable_amcl:
+        robot_ip = rospy.get_param("~robot_ip", "169.254.128.2")
+        robot_port = rospy.get_param("~robot_port", 5480)
+        resolved_map = map_file or rospy.get_param(
+            "~map_file", "/root/catkin_ws/maps/woosh_map.yaml"
+        )
+        start_amcl_support(robot_ip, robot_port, resolved_map)
 
     rospy.loginfo("서버 시작됨! (정/역방향 정밀 제어 - 작은 이동 최적화)")
     rospy.loginfo("rosservice call /mobile_move \"{distance: 0.3}\"")
     rospy.loginfo("rosservice call /mobile_move \"{distance: -0.3}\"")
     rospy.loginfo("RViz를 함께 띄우려면: rosrun woosh_bringup woosh_service_driver.py rviz_on")
+    rospy.loginfo("AMCL 로컬리제이션과 함께 시작하려면:")
+    rospy.loginfo("  rosrun woosh_bringup woosh_service_driver.py amcl")
+    rospy.loginfo("  rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/path/to/map.yaml")
     rospy.spin()
