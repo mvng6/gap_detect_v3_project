@@ -1,0 +1,90 @@
+<launch>
+  <!-- ============================================================
+       woosh_slam_gmapping — Woosh TR-200 GMapping SLAM 스택
+       ============================================================
+       실행 예시:
+         roslaunch woosh_slam_gmapping gmapping.launch robot_ip:=169.254.128.2
+
+       지도 저장 (별도 터미널, GMapping 실행 중인 상태에서):
+         roslaunch woosh_slam_gmapping save_map.launch map_name:=my_map
+
+       woosh_service_driver 통합 실행:
+         rosrun woosh_bringup woosh_service_driver.py slam
+
+       TF 트리:
+         odom (GMapping 발행: map→odom)
+          └── base_link (woosh_sensor_bridge 발행: odom→base_link)
+               └── laser (static_tf: z=0.25m)
+       ============================================================ -->
+
+  <!-- 로봇 연결 설정 -->
+  <arg name="robot_ip"          default="169.254.128.2" />
+  <arg name="robot_port"        default="5480" />
+
+  <!-- TF 프레임 이름 -->
+  <arg name="odom_frame"        default="odom" />
+  <arg name="base_frame"        default="base_link" />
+  <arg name="laser_frame"       default="laser" />
+
+  <!-- 레이저 센서의 base_link 기준 오프셋 (미터/라디안) -->
+  <arg name="laser_offset_x"    default="0.0" />
+  <arg name="laser_offset_y"    default="0.0" />
+  <arg name="laser_offset_z"    default="0.25" />
+  <arg name="laser_offset_yaw"  default="0.0" />
+
+  <!-- 센서 브릿지 발행 주기 (Hz) -->
+  <arg name="publish_hz"        default="10.0" />
+
+  <!-- RViz 실행 여부 -->
+  <arg name="launch_rviz"       default="true" />
+  <arg name="rviz_config"       default="$(find woosh_slam_gmapping)/rviz/gmapping_debug.rviz" />
+
+  <!-- ============================================================
+       1. 정적 TF: base_link → laser
+          AMCL amcl.launch과 동일한 오프셋 (z=0.25m)
+       ============================================================ -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="base_link_to_laser"
+        args="$(arg laser_offset_x) $(arg laser_offset_y) $(arg laser_offset_z)
+              $(arg laser_offset_yaw) 0.0 0.0
+              $(arg base_frame) $(arg laser_frame)" />
+
+  <!-- ============================================================
+       2. woosh_sensor_bridge — Woosh SDK → /scan + /odom + TF
+          woosh_slam_amcl 패키지의 스크립트를 직접 참조합니다.
+          robot_identity를 'gmapping_bridge'로 지정하여
+          AMCL의 'amcl_bridge'와 SDK 연결 충돌을 방지합니다.
+       ============================================================ -->
+  <node pkg="woosh_slam_amcl" type="woosh_sensor_bridge.py"
+        name="woosh_sensor_bridge"
+        output="screen">
+    <param name="robot_ip"       value="$(arg robot_ip)" />
+    <param name="robot_port"     value="$(arg robot_port)" />
+    <param name="robot_identity" value="gmapping_bridge" />
+    <param name="odom_frame"     value="$(arg odom_frame)" />
+    <param name="base_frame"     value="$(arg base_frame)" />
+    <param name="laser_frame"    value="$(arg laser_frame)" />
+    <param name="publish_hz"     value="$(arg publish_hz)" />
+  </node>
+
+  <!-- ============================================================
+       3. slam_gmapping — 온라인 지도 생성 (GMapping SLAM)
+          /scan + /odom + TF(odom→base_link)를 입력으로 받아
+          /map(OccupancyGrid)을 발행하고 TF(map→odom)를 브로드캐스트합니다.
+       ============================================================ -->
+  <node pkg="gmapping" type="slam_gmapping" name="slam_gmapping" output="screen">
+    <rosparam file="$(find woosh_slam_gmapping)/config/gmapping_params.yaml" command="load" />
+    <param name="odom_frame"  value="$(arg odom_frame)" />
+    <param name="base_frame"  value="$(arg base_frame)" />
+    <param name="map_frame"   value="map" />
+    <param name="scan"        value="/scan" />
+  </node>
+
+  <!-- ============================================================
+       4. RViz (선택적) — /map, /scan, /odom, TF 시각화
+       ============================================================ -->
+  <node if="$(arg launch_rviz)"
+        pkg="rviz" type="rviz" name="gmapping_rviz"
+        args="-d $(arg rviz_config)"
+        output="screen" />
+
+</launch>

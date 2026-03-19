@@ -435,12 +435,14 @@ controller = None
 rviz_debug_process = None
 rviz_process = None
 amcl_process = None
+gmapping_process = None
 
 
 def parse_cli_args(argv):
-    """`rviz_on` / `amcl` 사용자 플래그를 분리하고 나머지는 ROS argv로 유지한다."""
+    """`rviz_on` / `amcl` / `gmap` 사용자 플래그를 분리하고 나머지는 ROS argv로 유지한다."""
     launch_rviz = False
     enable_amcl = False
+    enable_gmap = False
     map_file = None
     filtered_argv = [argv[0]]
 
@@ -452,12 +454,17 @@ def parse_cli_args(argv):
             enable_amcl = True
             launch_rviz = True  # AMCL은 rviz_on을 내포
             continue
+        if arg.lower() in {"gmap", "--gmap"}:
+            enable_gmap = True
+            # GMapping은 gmapping.launch 내부에서 RViz를 실행하므로
+            # woosh_rviz_debug.py(SDK 디버그 시각화)는 별도 실행하지 않음
+            continue
         if arg.lower().startswith("map_file:="):
             map_file = arg[len("map_file:="):]
             continue
         filtered_argv.append(arg)
 
-    return launch_rviz, enable_amcl, map_file, filtered_argv
+    return launch_rviz, enable_amcl, enable_gmap, map_file, filtered_argv
 
 
 def find_package_dir():
@@ -569,6 +576,54 @@ def stop_amcl_support():
     amcl_process = None
 
 
+def find_gmapping_launch_path():
+    candidates = [
+        os.path.abspath(os.path.join(
+            script_dir, "../../woosh_slam/GMapping/woosh_slam_gmapping/launch/gmapping.launch"
+        )),
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    try:
+        import rospkg
+        return os.path.join(
+            rospkg.RosPack().get_path("woosh_slam_gmapping"), "launch", "gmapping.launch"
+        )
+    except Exception:
+        return None
+
+
+def stop_gmapping_support():
+    global gmapping_process
+    terminate_process_tree(gmapping_process, "GMapping 스택")
+    gmapping_process = None
+
+
+def start_gmapping_support(robot_ip, robot_port):
+    """GMapping gmap 스택(sensor_bridge + gmap_gmapping + RViz)을 roslaunch로 시작한다."""
+    global gmapping_process
+
+    gmapping_launch = find_gmapping_launch_path()
+    if gmapping_launch is None:
+        rospy.logwarn("gmapping.launch 파일을 찾을 수 없습니다. GMapping을 시작하지 않습니다.")
+        return
+
+    cmd = [
+        "roslaunch", gmapping_launch,
+        f"robot_ip:={robot_ip}",
+        f"robot_port:={robot_port}",
+        "launch_rviz:=true",
+    ]
+
+    try:
+        gmapping_process = subprocess.Popen(cmd, start_new_session=True)
+        rospy.loginfo("GMapping gmap 스택 시작")
+    except Exception as exc:
+        rospy.logwarn("GMapping 스택 시작 실패: %s", exc)
+
+
 def stop_rviz_support():
     global rviz_debug_process, rviz_process
 
@@ -593,7 +648,7 @@ def _validate_map_file(map_file):
         rospy.logerr("  해결:")
         rospy.logerr("    1. 컨테이너 재시작: docker-compose -f docker-compose.noetic_integration.yml up -d")
         rospy.logerr("    2. 컨테이너 진입:   docker exec -it noetic_robot_system_ws bash")
-        rospy.logerr("    3. 맵 생성:         rosrun woosh_slam_amcl export_map.py _robot_ip:=169.254.128.2")
+        rospy.logerr("    3. 맵 생성:         rosrun woosh_gmap_amcl export_map.py _robot_ip:=169.254.128.2")
         rospy.logerr("    4. 다른 맵 지정:    rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/path/to/map.yaml")
         return False
 
@@ -629,6 +684,11 @@ def start_amcl_support(robot_ip, robot_port, map_file):
         rospy.logwarn("amcl.launch 파일을 찾을 수 없습니다. AMCL을 시작하지 않습니다.")
         return
 
+    # rviz_config 경로를 명시적으로 전달하여 $(find woosh_gmap_amcl) 평가 우회
+    # roslaunch는 launch_rviz:=false 이더라도 모든 arg default 값을 파싱 시 평가하므로
+    # 패키지를 찾지 못하면 오류 발생 → 실제 파일 경로를 직접 지정
+    amcl_rviz_config = find_amcl_rviz_config_path()
+
     cmd = [
         "roslaunch", amcl_launch,
         f"robot_ip:={robot_ip}",
@@ -636,6 +696,9 @@ def start_amcl_support(robot_ip, robot_port, map_file):
         f"map_file:={map_file}",
         "launch_rviz:=false",   # RViz는 rviz_on 경로에서 별도 실행
     ]
+
+    if amcl_rviz_config:
+        cmd.append(f"rviz_config:={amcl_rviz_config}")
 
     try:
         amcl_process = subprocess.Popen(cmd, start_new_session=True)
@@ -727,10 +790,11 @@ def run_asyncio():
 
 
 if __name__ == "__main__":
-    enable_rviz, enable_amcl, map_file, init_argv = parse_cli_args(sys.argv)
+    enable_rviz, enable_amcl, enable_gmap, map_file, init_argv = parse_cli_args(sys.argv)
 
     rospy.init_node('mobile_move_server', anonymous=False, argv=init_argv)
     rospy.on_shutdown(stop_rviz_support)
+    rospy.on_shutdown(stop_gmapping_support)
     atexit.register(stop_rviz_support)
 
     thread = Thread(target=run_asyncio, daemon=True)
@@ -749,6 +813,11 @@ if __name__ == "__main__":
         )
         start_amcl_support(robot_ip, robot_port, resolved_map)
 
+    if enable_gmap:
+        robot_ip = rospy.get_param("~robot_ip", "169.254.128.2")
+        robot_port = rospy.get_param("~robot_port", 5480)
+        start_gmapping_support(robot_ip, robot_port)
+
     rospy.loginfo("서버 시작됨! (정/역방향 정밀 제어 - 작은 이동 최적화)")
     rospy.loginfo("rosservice call /mobile_move \"{distance: 0.3}\"")
     rospy.loginfo("rosservice call /mobile_move \"{distance: -0.3}\"")
@@ -756,4 +825,6 @@ if __name__ == "__main__":
     rospy.loginfo("AMCL 로컬리제이션과 함께 시작하려면:")
     rospy.loginfo("  rosrun woosh_bringup woosh_service_driver.py amcl")
     rospy.loginfo("  rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/path/to/map.yaml")
+    rospy.loginfo("GMapping gmap과 함께 시작하려면:")
+    rospy.loginfo("  rosrun woosh_bringup woosh_service_driver.py gmap")
     rospy.spin()
