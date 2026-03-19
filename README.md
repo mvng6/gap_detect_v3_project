@@ -129,7 +129,8 @@ src/
     │   │   └── docs/          # amcl_guide.md
     │   └── maps/              # 맵 파일 (.pgm + .yaml)
     └── woosh_slam/            # SLAM 패키지 모음 (지도 생성)
-        ├── GMapping/          # GMapping 기반 SLAM (예정)
+        ├── GMapping/          # GMapping 기반 SLAM
+        │   └── woosh_slam_gmapping/  # ROS 패키지
         └── Cartographer/      # Cartographer 기반 SLAM (예정)
 ```
 
@@ -205,6 +206,29 @@ rosrun woosh_bringup woosh_service_driver.py amcl \
 
 > 자세한 내용은 [`src/TR-200/woosh_navigation/AMCL/docs/amcl_guide.md`](src/TR-200/woosh_navigation/AMCL/docs/amcl_guide.md)를 참조하세요.
 
+### GMapping SLAM (woosh_slam_gmapping)
+
+GMapping은 사전 맵 없이 실시간으로 지도를 생성하는 SLAM 알고리즘입니다.
+생성한 지도는 즉시 AMCL 로컬리제이션에서 사용할 수 있습니다.
+
+```bash
+# 1단계: GMapping 스택 단독 실행 (RViz 포함)
+roslaunch woosh_slam_gmapping gmapping.launch robot_ip:=169.254.128.2
+
+# 1단계-B: woosh_service_driver 와 통합 실행 (권장)
+rosrun woosh_bringup woosh_service_driver.py slam
+
+# 2단계: 로봇을 탐색 영역 전체에 걸쳐 이동시킵니다.
+# /map 발행 확인: rostopic hz /map
+
+# 3단계: 지도 저장 (별도 터미널, GMapping 실행 중인 상태)
+roslaunch woosh_slam_gmapping save_map.launch map_name:=woosh_map
+# 저장 위치: /root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.{pgm,yaml}
+```
+
+> 저장된 지도는 즉시 `amcl.launch`의 `map_file` 인자로 사용할 수 있습니다.
+> 자세한 내용은 [`src/TR-200/woosh_slam/GMapping/woosh_slam_gmapping/docs/gmapping_guide.md`](src/TR-200/woosh_slam/GMapping/woosh_slam_gmapping/docs/gmapping_guide.md)를 참조하세요.
+
 ### 두산 협동로봇
 
 ```bash
@@ -271,7 +295,8 @@ a0509, **a0912**, e0509, h2017, h2515, m0609, m0617, m1013, m1509
 - [x] RViz 디버그 시각화
 - [x] 두 로봇 통합 제어 기초 프레임
 - [x] AMCL 로컬리제이션 (맵 기반 위치 추정)
-- [ ] GMapping / Cartographer (온라인 지도 생성)
+- [x] GMapping SLAM (온라인 지도 생성)
+- [ ] Cartographer SLAM (온라인 지도 생성)
 - [ ] 자율 내비게이션 (경로 계획 — move_base)
 - [ ] 갭 감지 알고리즘 개발
 - [ ] 협동 작업 시나리오 구현
