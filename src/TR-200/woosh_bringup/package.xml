@@ -9,12 +9,21 @@
 
   <buildtool_depend>catkin</buildtool_depend>
 
+  <build_depend>roslaunch</build_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
   <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>visualization_msgs</depend>
   <depend>woosh_control</depend>
   <depend>woosh_robot_py</depend>
   <depend>woosh_utils</depend>
 
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-pil</exec_depend>
+  <exec_depend>roslaunch</exec_depend>
+  <exec_depend>rviz</exec_depend>
 
   <export/>
 </package>
