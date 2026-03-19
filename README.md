@@ -50,20 +50,25 @@ rosrun woosh_bringup woosh_service_driver.py
 rosrun woosh_bringup woosh_service_driver.py rviz_on
 ```
 
-AMCL 로컬리제이션(위치 추정)과 함께 실행하려면:
+지도 생성(GMapping SLAM)과 함께 실행하려면:
 
 ```bash
-# 맵 파일이 이미 있는 경우
+rosrun woosh_bringup woosh_service_driver.py slam
+```
+
+> 생성한 지도 저장 방법은 아래 `실행 방법 > 지도 생성 및 지도 파일 준비` 섹션을 참조하세요.
+
+로컬라이제이션(AMCL, 위치 추정)과 함께 실행하려면:
+
+```bash
+# 기본 맵 파일 사용
 rosrun woosh_bringup woosh_service_driver.py amcl
 
 # 맵 파일 경로를 직접 지정하는 경우
 rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/my_map.yaml
 ```
 
-> **AMCL 사전 준비**: 맵 파일이 없으면 아래 명령으로 먼저 생성합니다.
-> ```bash
-> rosrun woosh_slam_amcl export_map.py _robot_ip:=169.254.128.2 _output_dir:=/root/catkin_ws/src/TR-200/woosh_navigation/maps
-> ```
+> 로컬라이제이션에는 맵 파일이 필요합니다. 맵 생성 또는 맵 내보내기는 아래 `실행 방법 > 지도 생성 및 지도 파일 준비` 섹션을 먼저 확인하세요.
 
 ### 터미널 4. Docker 진입 + 소싱 + 통합 동작 실행
 
@@ -183,36 +188,15 @@ source devel/setup.bash
 roslaunch woosh_bringup woosh_rviz_debug.launch robot_ip:=169.254.128.2
 ```
 
-### AMCL 로컬리제이션 (woosh_slam_amcl)
+### 지도 생성 및 지도 파일 준비
 
-AMCL(Adaptive Monte Carlo Localization)은 사전에 제작된 맵 위에서 로봇의 위치를 실시간으로 추정합니다.
+로컬라이제이션 전에 먼저 사용할 맵 파일(`.pgm` + `.yaml`)을 준비합니다.
+아래 두 가지 방법 중 하나를 선택하면 됩니다.
 
-```bash
-# 1단계: 맵 내보내기 (로봇에서 맵 파일 생성 — 최초 1회)
-rosrun woosh_slam_amcl export_map.py \
-  _robot_ip:=169.254.128.2 \
-  _output_dir:=/root/catkin_ws/src/TR-200/woosh_navigation/maps \
-  _map_name:=woosh_map
-
-# 2단계-A: AMCL 스택 단독 실행 (RViz 포함)
-roslaunch woosh_slam_amcl amcl.launch \
-  robot_ip:=169.254.128.2 \
-  map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml
-
-# 2단계-B: woosh_service_driver 와 통합 실행 (권장)
-rosrun woosh_bringup woosh_service_driver.py amcl \
-  map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml
-```
-
-> 자세한 내용은 [`src/TR-200/woosh_navigation/AMCL/docs/amcl_guide.md`](src/TR-200/woosh_navigation/AMCL/docs/amcl_guide.md)를 참조하세요.
-
-### GMapping SLAM (woosh_slam_gmapping)
-
-GMapping은 사전 맵 없이 실시간으로 지도를 생성하는 SLAM 알고리즘입니다.
-생성한 지도는 즉시 AMCL 로컬리제이션에서 사용할 수 있습니다.
+#### 1. GMapping으로 새 지도 생성
 
 ```bash
-# 1단계: GMapping 스택 단독 실행 (RViz 포함)
+# 1단계-A: GMapping 스택 단독 실행 (RViz 포함)
 roslaunch woosh_slam_gmapping gmapping.launch robot_ip:=169.254.128.2
 
 # 1단계-B: woosh_service_driver 와 통합 실행 (권장)
@@ -226,8 +210,34 @@ roslaunch woosh_slam_gmapping save_map.launch map_name:=woosh_map
 # 저장 위치: /root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.{pgm,yaml}
 ```
 
-> 저장된 지도는 즉시 `amcl.launch`의 `map_file` 인자로 사용할 수 있습니다.
-> 자세한 내용은 [`src/TR-200/woosh_slam/GMapping/woosh_slam_gmapping/docs/gmapping_guide.md`](src/TR-200/woosh_slam/GMapping/woosh_slam_gmapping/docs/gmapping_guide.md)를 참조하세요.
+#### 2. 로봇에 저장된 기존 맵 내보내기
+
+```bash
+rosrun woosh_slam_amcl export_map.py \
+  _robot_ip:=169.254.128.2 \
+  _output_dir:=/root/catkin_ws/src/TR-200/woosh_navigation/maps \
+  _map_name:=woosh_map
+```
+
+> 준비된 지도 파일은 아래 `AMCL 로컬리제이션` 섹션의 `map_file` 인자로 바로 사용할 수 있습니다.
+> 새 지도 생성 절차는 [`src/TR-200/woosh_slam/GMapping/woosh_slam_gmapping/docs/gmapping_guide.md`](src/TR-200/woosh_slam/GMapping/woosh_slam_gmapping/docs/gmapping_guide.md)를 참조하세요.
+
+### AMCL 로컬리제이션 (woosh_slam_amcl)
+
+AMCL(Adaptive Monte Carlo Localization)은 이미 준비된 맵 위에서 로봇의 위치를 실시간으로 추정합니다.
+
+```bash
+# 1단계-A: AMCL 스택 단독 실행 (RViz 포함)
+roslaunch woosh_slam_amcl amcl.launch \
+  robot_ip:=169.254.128.2 \
+  map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml
+
+# 1단계-B: woosh_service_driver 와 통합 실행 (권장)
+rosrun woosh_bringup woosh_service_driver.py amcl \
+  map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml
+```
+
+> 자세한 내용은 [`src/TR-200/woosh_navigation/AMCL/docs/amcl_guide.md`](src/TR-200/woosh_navigation/AMCL/docs/amcl_guide.md)를 참조하세요.
 
 ### 두산 협동로봇
 
@@ -294,8 +304,8 @@ a0509, **a0912**, e0509, h2017, h2515, m0609, m0617, m1013, m1509
 - [x] Woosh 모바일로봇 연결 및 기초 구동
 - [x] RViz 디버그 시각화
 - [x] 두 로봇 통합 제어 기초 프레임
-- [x] AMCL 로컬리제이션 (맵 기반 위치 추정)
 - [x] GMapping SLAM (온라인 지도 생성)
+- [x] AMCL 로컬리제이션 (맵 기반 위치 추정)
 - [ ] Cartographer SLAM (온라인 지도 생성)
 - [ ] 자율 내비게이션 (경로 계획 — move_base)
 - [ ] 갭 감지 알고리즘 개발

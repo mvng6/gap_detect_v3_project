@@ -436,13 +436,15 @@ rviz_debug_process = None
 rviz_process = None
 amcl_process = None
 gmapping_process = None
+cartographer_process = None
 
 
 def parse_cli_args(argv):
-    """`rviz_on` / `amcl` / `gmap` 사용자 플래그를 분리하고 나머지는 ROS argv로 유지한다."""
+    """`rviz_on` / `amcl` / `gmap` / `carto` 사용자 플래그를 분리하고 나머지는 ROS argv로 유지한다."""
     launch_rviz = False
     enable_amcl = False
     enable_gmap = False
+    enable_carto = False
     map_file = None
     filtered_argv = [argv[0]]
 
@@ -459,12 +461,17 @@ def parse_cli_args(argv):
             # GMapping은 gmapping.launch 내부에서 RViz를 실행하므로
             # woosh_rviz_debug.py(SDK 디버그 시각화)는 별도 실행하지 않음
             continue
+        if arg.lower() in {"carto", "--carto"}:
+            enable_carto = True
+            # Cartographer는 cartographer.launch 내부에서 RViz를 실행하므로
+            # woosh_rviz_debug.py(SDK 디버그 시각화)는 별도 실행하지 않음
+            continue
         if arg.lower().startswith("map_file:="):
             map_file = arg[len("map_file:="):]
             continue
         filtered_argv.append(arg)
 
-    return launch_rviz, enable_amcl, enable_gmap, map_file, filtered_argv
+    return launch_rviz, enable_amcl, enable_gmap, enable_carto, map_file, filtered_argv
 
 
 def find_package_dir():
@@ -601,6 +608,31 @@ def stop_gmapping_support():
     gmapping_process = None
 
 
+def find_cartographer_launch_path():
+    candidates = [
+        os.path.abspath(os.path.join(
+            script_dir, "../../woosh_slam/Cartographer/woosh_slam_cartographer/launch/cartographer.launch"
+        )),
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    try:
+        import rospkg
+        return os.path.join(
+            rospkg.RosPack().get_path("woosh_slam_cartographer"), "launch", "cartographer.launch"
+        )
+    except Exception:
+        return None
+
+
+def stop_cartographer_support():
+    global cartographer_process
+    terminate_process_tree(cartographer_process, "Cartographer 스택")
+    cartographer_process = None
+
+
 def start_gmapping_support(robot_ip, robot_port):
     """GMapping gmap 스택(sensor_bridge + gmap_gmapping + RViz)을 roslaunch로 시작한다."""
     global gmapping_process
@@ -622,6 +654,29 @@ def start_gmapping_support(robot_ip, robot_port):
         rospy.loginfo("GMapping gmap 스택 시작")
     except Exception as exc:
         rospy.logwarn("GMapping 스택 시작 실패: %s", exc)
+
+
+def start_cartographer_support(robot_ip, robot_port):
+    """Cartographer 스택(sensor_bridge + cartographer_node + occupancy_grid_node + RViz)을 roslaunch로 시작한다."""
+    global cartographer_process
+
+    cartographer_launch = find_cartographer_launch_path()
+    if cartographer_launch is None:
+        rospy.logwarn("cartographer.launch 파일을 찾을 수 없습니다. Cartographer를 시작하지 않습니다.")
+        return
+
+    cmd = [
+        "roslaunch", cartographer_launch,
+        f"robot_ip:={robot_ip}",
+        f"robot_port:={robot_port}",
+        "launch_rviz:=true",
+    ]
+
+    try:
+        cartographer_process = subprocess.Popen(cmd, start_new_session=True)
+        rospy.loginfo("Cartographer SLAM 스택 시작")
+    except Exception as exc:
+        rospy.logwarn("Cartographer 스택 시작 실패: %s", exc)
 
 
 def stop_rviz_support():
@@ -790,11 +845,12 @@ def run_asyncio():
 
 
 if __name__ == "__main__":
-    enable_rviz, enable_amcl, enable_gmap, map_file, init_argv = parse_cli_args(sys.argv)
+    enable_rviz, enable_amcl, enable_gmap, enable_carto, map_file, init_argv = parse_cli_args(sys.argv)
 
     rospy.init_node('mobile_move_server', anonymous=False, argv=init_argv)
     rospy.on_shutdown(stop_rviz_support)
     rospy.on_shutdown(stop_gmapping_support)
+    rospy.on_shutdown(stop_cartographer_support)
     atexit.register(stop_rviz_support)
 
     thread = Thread(target=run_asyncio, daemon=True)
@@ -818,6 +874,11 @@ if __name__ == "__main__":
         robot_port = rospy.get_param("~robot_port", 5480)
         start_gmapping_support(robot_ip, robot_port)
 
+    if enable_carto:
+        robot_ip = rospy.get_param("~robot_ip", "169.254.128.2")
+        robot_port = rospy.get_param("~robot_port", 5480)
+        start_cartographer_support(robot_ip, robot_port)
+
     rospy.loginfo("서버 시작됨! (정/역방향 정밀 제어 - 작은 이동 최적화)")
     rospy.loginfo("rosservice call /mobile_move \"{distance: 0.3}\"")
     rospy.loginfo("rosservice call /mobile_move \"{distance: -0.3}\"")
@@ -825,6 +886,8 @@ if __name__ == "__main__":
     rospy.loginfo("AMCL 로컬리제이션과 함께 시작하려면:")
     rospy.loginfo("  rosrun woosh_bringup woosh_service_driver.py amcl")
     rospy.loginfo("  rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/path/to/map.yaml")
-    rospy.loginfo("GMapping gmap과 함께 시작하려면:")
+    rospy.loginfo("GMapping SLAM과 함께 시작하려면:")
     rospy.loginfo("  rosrun woosh_bringup woosh_service_driver.py gmap")
+    rospy.loginfo("Cartographer SLAM과 함께 시작하려면:")
+    rospy.loginfo("  rosrun woosh_bringup woosh_service_driver.py carto")
     rospy.spin()

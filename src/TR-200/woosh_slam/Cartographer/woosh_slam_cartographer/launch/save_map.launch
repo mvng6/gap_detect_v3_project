@@ -1,0 +1,43 @@
+<launch>
+  <!-- ============================================================
+       save_map.launch — Cartographer로 생성된 지도를 파일로 저장
+       ============================================================
+       cartographer.launch가 실행 중인 상태에서 별도 터미널로 실행합니다.
+       map_saver는 /map 토픽에서 OccupancyGrid를 수신하면 저장 후 종료됩니다.
+
+       실행 예시:
+         # 기본 저장 (woosh_cartographer_map.pgm / .yaml)
+         roslaunch woosh_slam_cartographer save_map.launch
+
+         # 이름 지정
+         roslaunch woosh_slam_cartographer save_map.launch map_name:=my_carto_map
+
+         # 저장 경로 지정
+         roslaunch woosh_slam_cartographer save_map.launch \
+           map_name:=my_carto_map \
+           output_dir:=/tmp/maps
+
+       저장 결과:
+         {output_dir}/{map_name}.pgm   — 점유 격자 이미지
+         {output_dir}/{map_name}.yaml  — 지도 메타데이터 (해상도, 원점 등)
+
+       저장된 지도는 즉시 AMCL에서 사용할 수 있습니다:
+         rosrun woosh_bringup woosh_service_driver.py amcl \
+           map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/{map_name}.yaml
+       ============================================================ -->
+
+  <!-- 저장할 지도 이름 (확장자 제외) -->
+  <arg name="map_name"    default="woosh_cartographer_map" />
+
+  <!-- 저장 디렉터리
+       기본값: AMCL/GMapping 패키지와 공유하는 maps 폴더
+       → 저장 즉시 amcl.launch의 map_file 인자로 사용 가능 -->
+  <arg name="output_dir"  default="/root/catkin_ws/src/TR-200/woosh_navigation/maps" />
+
+  <!-- map_saver: /map 토픽 구독 → .pgm + .yaml 저장 후 자동 종료 -->
+  <node pkg="map_server" type="map_saver"
+        name="map_saver"
+        args="-f $(arg output_dir)/$(arg map_name)"
+        output="screen" />
+
+</launch>
