@@ -5,7 +5,7 @@
        실행 예시:
          roslaunch woosh_slam_amcl amcl.launch \
            robot_ip:=169.254.128.2 \
-           map_file:=/root/catkin_ws/maps/woosh_map.yaml
+           map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml
 
        맵 파일이 없을 경우 먼저 export_map.py로 생성하세요:
          rosrun woosh_slam_amcl export_map.py _robot_ip:=169.254.128.2
@@ -16,7 +16,7 @@
   <arg name="robot_port"        default="5480" />
 
   <!-- 맵 파일 경로 (.yaml) -->
-  <arg name="map_file"          default="/root/catkin_ws/maps/woosh_map.yaml" />
+  <arg name="map_file"          default="/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml" />
 
   <!-- TF 프레임 이름 -->
   <arg name="map_frame"         default="map" />

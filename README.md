@@ -57,12 +57,12 @@ AMCL 로컬리제이션(위치 추정)과 함께 실행하려면:
 rosrun woosh_bringup woosh_service_driver.py amcl
 
 # 맵 파일 경로를 직접 지정하는 경우
-rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/root/catkin_ws/maps/my_map.yaml
+rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/my_map.yaml
 ```
 
 > **AMCL 사전 준비**: 맵 파일이 없으면 아래 명령으로 먼저 생성합니다.
 > ```bash
-> rosrun woosh_slam_amcl export_map.py _robot_ip:=169.254.128.2 _output_dir:=/root/catkin_ws/maps
+> rosrun woosh_slam_amcl export_map.py _robot_ip:=169.254.128.2 _output_dir:=/root/catkin_ws/src/TR-200/woosh_navigation/maps
 > ```
 
 ### 터미널 4. Docker 진입 + 소싱 + 통합 동작 실행
@@ -103,27 +103,34 @@ main_command (통합 제어 노드)
 
 ```
 src/
-├── main_command/          # 두 로봇을 통합 제어하는 최상위 조율 레이어
-├── doosan-robot/          # 두산 협동로봇 패키지 (공식 + 커스텀)
-│   ├── dsr_control/       # 하드웨어 인터페이스 (C++)
-│   ├── dsr_msgs/          # ROS 서비스/메시지 정의 (100+)
-│   ├── dsr_description/   # URDF/Xacro 모델
-│   ├── dsr_launcher/      # 런치 파일
-│   ├── dsr_gazebo/        # Gazebo 시뮬레이션
-│   ├── dsr_example/       # 예제 스크립트
-│   └── moveit_config_*/   # MoveIt 설정 (로봇 모델별)
-└── TR-200/                # Woosh 모바일로봇 패키지
-    ├── woosh_robot_py/    # WebSocket SDK 래퍼
-    ├── woosh_bringup/     # ROS 노드 + 런치 파일
-    ├── woosh_msgs/        # 커스텀 서비스 정의
-    ├── woosh_utils/       # 유틸리티 (배터리 상태 등)
-    └── woosh_SLAM/        # SLAM 알고리즘 패키지 모음
-        └── AMCL/          # woosh_slam_amcl — AMCL 로컬리제이션
-            ├── scripts/   # woosh_sensor_bridge.py, export_map.py
-            ├── launch/    # amcl.launch
-            ├── config/    # amcl_params.yaml
-            ├── rviz/      # amcl_debug.rviz
-            └── docs/      # 상세 문서
+├── main_command/              # 두 로봇을 통합 제어하는 최상위 조율 레이어
+├── doosan-robot/              # 두산 협동로봇 패키지 (공식 + 커스텀)
+│   ├── dsr_control/           # 하드웨어 인터페이스 (C++)
+│   ├── dsr_msgs/              # ROS 서비스/메시지 정의 (100+)
+│   ├── dsr_description/       # URDF/Xacro 모델
+│   ├── dsr_launcher/          # 런치 파일
+│   ├── dsr_gazebo/            # Gazebo 시뮬레이션
+│   ├── dsr_example/           # 예제 스크립트
+│   └── moveit_config_*/       # MoveIt 설정 (로봇 모델별)
+└── TR-200/                    # Woosh 모바일로봇 패키지
+    ├── woosh_robot_py/        # WebSocket SDK 래퍼
+    ├── woosh_bringup/         # ROS 노드 + 런치 파일
+    │   ├── scripts/           # woosh_service_driver.py, woosh_rviz_debug.py
+    │   ├── launch/            # woosh_rviz_debug.launch
+    │   └── rviz/              # woosh_rviz_debug.rviz
+    ├── woosh_msgs/            # 커스텀 서비스 정의 (MoveMobile.srv)
+    ├── woosh_utils/           # 유틸리티 (배터리 상태 출력)
+    ├── woosh_navigation/      # 네비게이션 패키지 모음
+    │   ├── AMCL/              # woosh_slam_amcl — 맵 기반 위치 추정
+    │   │   ├── scripts/       # woosh_sensor_bridge.py, export_map.py
+    │   │   ├── launch/        # amcl.launch
+    │   │   ├── config/        # amcl_params.yaml
+    │   │   ├── rviz/          # amcl_debug.rviz
+    │   │   └── docs/          # amcl_guide.md
+    │   └── maps/              # 맵 파일 (.pgm + .yaml)
+    └── woosh_slam/            # SLAM 패키지 모음 (지도 생성)
+        ├── GMapping/          # GMapping 기반 SLAM (예정)
+        └── Cartographer/      # Cartographer 기반 SLAM (예정)
 ```
 
 ---
@@ -183,20 +190,20 @@ AMCL(Adaptive Monte Carlo Localization)은 사전에 제작된 맵 위에서 로
 # 1단계: 맵 내보내기 (로봇에서 맵 파일 생성 — 최초 1회)
 rosrun woosh_slam_amcl export_map.py \
   _robot_ip:=169.254.128.2 \
-  _output_dir:=/root/catkin_ws/maps \
+  _output_dir:=/root/catkin_ws/src/TR-200/woosh_navigation/maps \
   _map_name:=woosh_map
 
 # 2단계-A: AMCL 스택 단독 실행 (RViz 포함)
 roslaunch woosh_slam_amcl amcl.launch \
   robot_ip:=169.254.128.2 \
-  map_file:=/root/catkin_ws/maps/woosh_map.yaml
+  map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml
 
 # 2단계-B: woosh_service_driver 와 통합 실행 (권장)
 rosrun woosh_bringup woosh_service_driver.py amcl \
-  map_file:=/root/catkin_ws/maps/woosh_map.yaml
+  map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml
 ```
 
-> 자세한 내용은 [`src/TR-200/woosh_SLAM/AMCL/docs/amcl_guide.md`](src/TR-200/woosh_SLAM/AMCL/docs/amcl_guide.md)를 참조하세요.
+> 자세한 내용은 [`src/TR-200/woosh_navigation/AMCL/docs/amcl_guide.md`](src/TR-200/woosh_navigation/AMCL/docs/amcl_guide.md)를 참조하세요.
 
 ### 두산 협동로봇
 

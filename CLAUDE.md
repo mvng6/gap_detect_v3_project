@@ -25,7 +25,7 @@ docker exec -it noetic_robot_system_ws bash
 source /root/catkin_ws/devel/setup.bash
 ```
 
-The `src/` and `maps/` directories are volume-mounted into the container at `/root/catkin_ws/`.
+The `src/` directory is volume-mounted into the container at `/root/catkin_ws/src/`. Map files are stored inside `src/TR-200/woosh_navigation/maps/` and accessible in the container at `/root/catkin_ws/src/TR-200/woosh_navigation/maps/`.
 
 ## Build Commands
 
@@ -95,6 +95,9 @@ src/
     ├── woosh_bringup/     # ROS nodes + launch files
     ├── woosh_msgs/        # Custom service definitions
     ├── woosh_utils/       # Utility scripts (battery, etc.)
+    ├── woosh_navigation/  # 네비게이션 패키지 모음
+    │   └── AMCL/          # AMCL 로컬리제이션 (woosh_slam_amcl)
+    │       └── maps/      # 맵 파일 (.pgm + .yaml)
     └── woosh_control/     # Placeholder
 ```
 
@@ -148,4 +151,4 @@ python-dateutil>=2.8.2
 
 ## Maps
 
-Map files are stored in the top-level `maps/` directory and mounted into the container. The Woosh robot uses these for navigation (AMCL-based localization).
+Map files are stored in `src/TR-200/woosh_navigation/maps/` and mounted into the container via the `src/` volume at `/root/catkin_ws/src/TR-200/woosh_navigation/maps/`. The Woosh robot uses these for AMCL-based localization.

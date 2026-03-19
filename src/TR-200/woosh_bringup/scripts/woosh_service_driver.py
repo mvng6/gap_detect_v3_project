@@ -501,7 +501,7 @@ def find_rviz_config_path():
 
 def find_amcl_rviz_config_path():
     candidates = [
-        os.path.abspath(os.path.join(script_dir, "../../woosh_SLAM/AMCL/rviz/amcl_debug.rviz")),
+        os.path.abspath(os.path.join(script_dir, "../../woosh_navigation/AMCL/rviz/amcl_debug.rviz")),
     ]
 
     for candidate in candidates:
@@ -519,7 +519,7 @@ def find_amcl_rviz_config_path():
 
 def find_amcl_launch_path():
     candidates = [
-        os.path.abspath(os.path.join(script_dir, "../../woosh_SLAM/AMCL/launch/amcl.launch")),
+        os.path.abspath(os.path.join(script_dir, "../../woosh_navigation/AMCL/launch/amcl.launch")),
     ]
 
     for candidate in candidates:
@@ -581,9 +581,48 @@ def stop_rviz_support():
     stop_amcl_support()
 
 
+def _validate_map_file(map_file):
+    """맵 파일(.yaml)과 참조된 이미지(.pgm) 존재 여부를 검증한다.
+
+    Returns:
+        True: 정상, False: 파일 없음 (오류 로그 포함)
+    """
+    if not os.path.isfile(map_file):
+        rospy.logerr("맵 파일을 찾을 수 없습니다: %s", map_file)
+        rospy.logerr("  원인: Docker 볼륨 마운트가 적용되지 않았거나 컨테이너 밖에서 실행 중일 수 있습니다.")
+        rospy.logerr("  해결:")
+        rospy.logerr("    1. 컨테이너 재시작: docker-compose -f docker-compose.noetic_integration.yml up -d")
+        rospy.logerr("    2. 컨테이너 진입:   docker exec -it noetic_robot_system_ws bash")
+        rospy.logerr("    3. 맵 생성:         rosrun woosh_slam_amcl export_map.py _robot_ip:=169.254.128.2")
+        rospy.logerr("    4. 다른 맵 지정:    rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/path/to/map.yaml")
+        return False
+
+    # yaml 안의 image 경로도 확인
+    try:
+        map_dir = os.path.dirname(map_file)
+        with open(map_file) as f:
+            for line in f:
+                if line.startswith("image:"):
+                    img_path = line.split(":", 1)[1].strip()
+                    if not os.path.isabs(img_path):
+                        img_path = os.path.join(map_dir, img_path)
+                    if not os.path.isfile(img_path):
+                        rospy.logerr("맵 이미지 파일을 찾을 수 없습니다: %s", img_path)
+                        return False
+                    break
+    except Exception as exc:
+        rospy.logwarn("맵 파일 내용 검증 중 오류 (계속 진행): %s", exc)
+
+    return True
+
+
 def start_amcl_support(robot_ip, robot_port, map_file):
     """AMCL 스택(sensor_bridge + map_server + amcl)을 roslaunch로 시작한다."""
     global amcl_process
+
+    if not _validate_map_file(map_file):
+        rospy.logerr("AMCL을 시작하지 않습니다. 위 오류를 해결한 후 재시작하세요.")
+        return
 
     amcl_launch = find_amcl_launch_path()
     if amcl_launch is None:
@@ -706,7 +745,7 @@ if __name__ == "__main__":
         robot_ip = rospy.get_param("~robot_ip", "169.254.128.2")
         robot_port = rospy.get_param("~robot_port", 5480)
         resolved_map = map_file or rospy.get_param(
-            "~map_file", "/root/catkin_ws/maps/woosh_map.yaml"
+            "~map_file", "/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml"
         )
         start_amcl_support(robot_ip, robot_port, resolved_map)
 
