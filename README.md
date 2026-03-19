@@ -4,6 +4,64 @@
 
 현재는 각 로봇의 연결 및 기초 구동 환경이 구축된 상태이며, 이후 SLAM, 자율 내비게이션, 갭 감지 알고리즘 등을 단계적으로 추가할 예정입니다.
 
+## 통합 시스템 빠른 실행
+
+아래 순서대로 `터미널 1 → 터미널 2 → 터미널 3 → 터미널 4`를 각각 별도로 열어 실행하면 통합 시스템을 구동할 수 있습니다. 모든 명령은 `noetic_robot_system_ws` Docker 컨테이너 기준입니다.
+
+### 사전 준비 (호스트에서 1회)
+
+컨테이너가 아직 실행 중이 아니라면 먼저 아래 명령을 실행합니다.
+
+```bash
+xhost +local:docker
+docker-compose -f docker-compose.noetic_integration.yml up -d
+```
+
+### 터미널 1. Docker 진입 + 소싱 + `roscore`
+
+```bash
+docker exec -it noetic_robot_system_ws bash
+cd /root/catkin_ws
+source devel/setup.bash
+roscore
+```
+
+### 터미널 2. Docker 진입 + 소싱 + 두산로봇 연결
+
+```bash
+docker exec -it noetic_robot_system_ws bash
+cd /root/catkin_ws
+source devel/setup.bash
+roslaunch woosh_slam slam_gmapping.launch robot_ip:=169.254.128.2
+```
+
+### 터미널 3. Docker 진입 + 소싱 + 모바일로봇(TR-200) 연결
+
+```bash
+docker exec -it noetic_robot_system_ws bash
+cd /root/catkin_ws
+source devel/setup.bash
+rosrun woosh_bringup woosh_service_driver.py
+```
+
+현재 맵과 로봇을 RViz에서 실시간으로 확인하려면 마지막 명령을 아래처럼 실행합니다.
+
+```bash
+docker exec -it noetic_robot_system_ws bash
+cd /root/catkin_ws
+source devel/setup.bash
+rosrun woosh_bringup woosh_service_driver.py rviz_on
+```
+
+### 터미널 4. Docker 진입 + 소싱 + 통합 동작 실행
+
+```bash
+docker exec -it noetic_robot_system_ws bash
+cd /root/catkin_ws
+source devel/setup.bash
+rosrun main_command main_system_operation.py
+```
+
 ---
 
 ## 시스템 구성
