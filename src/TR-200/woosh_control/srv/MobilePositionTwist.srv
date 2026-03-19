@@ -1,0 +1,7 @@
+# request
+float32 distance    # 이동할 거리 (m), 음수는 후진
+---
+# response
+bool success
+string message
+
