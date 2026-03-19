@@ -5,8 +5,11 @@ import os
 import re
 from setuptools import setup, find_packages
 
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+os.chdir(BASE_DIR)
+
 # 读取版本信息
-with open("__init__.py", "r", encoding="utf-8") as f:
+with open(os.path.join(BASE_DIR, "__init__.py"), "r", encoding="utf-8") as f:
     version_match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]", f.read(), re.M)
     if version_match:
         version = version_match.group(1)
@@ -14,7 +17,7 @@ with open("__init__.py", "r", encoding="utf-8") as f:
         raise RuntimeError("无法从__init__.py中找到版本信息")
 
 # 读取README文件
-with open("README.md", "r", encoding="utf-8") as f:
+with open(os.path.join(BASE_DIR, "README.md"), "r", encoding="utf-8") as f:
     long_description = f.read()
 
 # 核心依赖项

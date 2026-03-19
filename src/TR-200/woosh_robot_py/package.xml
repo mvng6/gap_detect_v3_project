@@ -8,6 +8,10 @@
   <license>Proprietary</license>
 
   <buildtool_depend>catkin</buildtool_depend>
+  <exec_depend>python3-dateutil</exec_depend>
+  <exec_depend>python3-protobuf</exec_depend>
+  <exec_depend>python3-typing-extensions</exec_depend>
+  <exec_depend>python3-websockets</exec_depend>
 
   <export/>
 </package>

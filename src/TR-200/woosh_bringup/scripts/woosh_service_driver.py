@@ -14,9 +14,10 @@ from threading import Thread
 # 현재 스크립트 디렉토리 기준으로 필요한 경로 추가
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
-# woosh_robot_py 경로 추가 (WooshRobot, woosh 모듈)
-woosh_robot_dir = os.path.join(script_dir, '../../woosh_robot_py')
-sys.path.insert(0, os.path.abspath(woosh_robot_dir))
+# 소스 트리에서 직접 실행할 때도 SDK 모듈 경로를 찾을 수 있도록 보완
+woosh_robot_dir = os.path.abspath(os.path.join(script_dir, "../../woosh_robot_py"))
+if woosh_robot_dir not in sys.path:
+    sys.path.insert(0, woosh_robot_dir)
 
 # woosh_utils 패키지가 아직 빌드/설치되지 않은 소스 트리에서도 import 가능하도록 보완
 try:
@@ -28,15 +29,15 @@ except ImportError:
     from woosh_utils import print_battery_status
 
 from woosh_control.srv import MobilePositionTwist, MobilePositionTwistResponse
-from woosh_robot_py import WooshRobot
-from woosh_robot_py.woosh_interface import CommuSettings, NO_PRINT, FULL_PRINT
-from woosh_robot_py.woosh.proto.robot.robot_pack_pb2 import Twist, ExecTask
-from woosh_robot_py.woosh.proto.robot.robot_pb2 import (RobotInfo, PoseSpeed, OperationState, TaskProc, ScannerData)
-from woosh_robot_py.woosh.proto.robot.robot_pack_pb2 import SwitchMap, SetRobotPose, InitRobot, SwitchControlMode
-from woosh_robot_py.woosh.proto.map.map_pack_pb2 import SceneList
-from woosh_robot_py.woosh.proto.util.task_pb2 import State as TaskState, Type as TaskType, Direction as TaskDirection
+from woosh_robot import WooshRobot
+from woosh_interface import CommuSettings, NO_PRINT, FULL_PRINT
+from woosh.proto.robot.robot_pack_pb2 import Twist, ExecTask
+from woosh.proto.robot.robot_pb2 import (RobotInfo, PoseSpeed, OperationState, TaskProc, ScannerData)
+from woosh.proto.robot.robot_pack_pb2 import SwitchMap, SetRobotPose, InitRobot, SwitchControlMode
+from woosh.proto.map.map_pack_pb2 import SceneList
+from woosh.proto.util.task_pb2 import State as TaskState, Type as TaskType, Direction as TaskDirection
 
-from woosh_robot_py.woosh.proto.util.robot_pb2 import ControlMode
+from woosh.proto.util.robot_pb2 import ControlMode
 
 class SmoothTwistController:
     def __init__(self):

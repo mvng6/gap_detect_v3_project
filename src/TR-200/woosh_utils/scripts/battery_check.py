@@ -23,19 +23,20 @@ import asyncio
 import sys
 import os
 
-# woosh_robot_py 경로 추가 (ROS 패키지 의존성으로 처리하는 것이 이상적이지만,
-# 현재는 상대 경로로 처리)
+# 소스 트리에서 직접 실행할 때도 SDK 모듈 경로를 찾을 수 있도록 보완
 script_dir = os.path.dirname(os.path.abspath(__file__))
-woosh_robot_dir = os.path.join(script_dir, '../../woosh_robot_py')
+woosh_robot_dir = os.path.abspath(os.path.join(script_dir, "../../woosh_robot_py"))
 if woosh_robot_dir not in sys.path:
-    sys.path.insert(0, os.path.abspath(woosh_robot_dir))
+    sys.path.insert(0, woosh_robot_dir)
 
 try:
-    from woosh_robot_py import WooshRobot, CommuSettings
-    from woosh_robot_py.woosh.proto.robot.robot_pb2 import RobotInfo
+    from woosh_robot import WooshRobot
+    from woosh_interface import CommuSettings
+    from woosh.proto.robot.robot_pb2 import RobotInfo
 except ImportError as e:
-    rospy.logerr(f"woosh_robot_py 패키지를 찾을 수 없습니다: {e}")
-    rospy.logerr("패키지가 올바르게 설치되었는지 확인하세요.")
+    rospy.logerr(f"Woosh SDK 모듈을 불러올 수 없습니다: {e}")
+    rospy.logerr("`catkin build` 후 `source devel/setup.bash`가 적용됐는지 확인하세요.")
+    rospy.logerr("직접 실행 중이라면 `src/TR-200/woosh_robot_py` 경로와 Python 의존성(websockets, protobuf 등)을 확인하세요.")
     sys.exit(1)
 
 # woosh_utils 패키지가 아직 빌드/설치되지 않은 소스 트리에서도 import 가능하도록 보완

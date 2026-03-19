@@ -20,6 +20,16 @@ WooshRobot SDK - Python SDK for Woosh Robot
     await robot.stop()
 """
 
+import os
+import sys
+
+# Legacy SDK modules use top-level imports such as `import woosh_interface`.
+# Add the package directory itself to sys.path so both package-style imports
+# (`import woosh_robot_py`) and legacy flat-module imports can coexist.
+package_dir = os.path.dirname(os.path.abspath(__file__))
+if package_dir not in sys.path:
+    sys.path.insert(0, package_dir)
+
 from .woosh_robot import WooshRobot
 from .woosh_interface import (
     RobotInterface,
