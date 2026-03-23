@@ -32,6 +32,15 @@
   <!-- Pure Localization에 필요한 .pbstream 파일 경로 -->
   <arg name="state_file" />
 
+  <!-- Localization 모드 선택
+       fix    : AMCL처럼 고정된 맵에서 위치 추정만 수행 (/map 갱신 없음)
+       nonfix : 서브맵을 생성하며 /map을 지속 업데이트 + pose 보정 (기본값) -->
+  <arg name="localization_mode" default="nonfix" />
+  <arg if="$(eval localization_mode == 'fix')"
+       name="config_basename" value="cartographer_2d_localization_fix.lua" />
+  <arg unless="$(eval localization_mode == 'fix')"
+       name="config_basename" value="cartographer_2d_localization.lua" />
+
   <!-- TF 프레임 이름 -->
   <arg name="odom_frame"        default="odom" />
   <arg name="base_frame"        default="base_link" />
@@ -85,14 +94,17 @@
        ============================================================ -->
   <node pkg="cartographer_ros" type="cartographer_node" name="cartographer_node"
         args="-configuration_directory $(find woosh_slam_cartographer)/config
-              -configuration_basename cartographer_2d_localization.lua
+              -configuration_basename $(arg config_basename)
               -load_state_filename $(arg state_file)"
         output="log" />
 
   <!-- ============================================================
        4. cartographer_occupancy_grid_node — /map 발행
+          fix 모드에서는 실행하지 않음 (/map 고정 — 원본 pbstream 그대로 유지)
+          nonfix 모드에서는 새 서브맵 포함 /map 지속 업데이트
        ============================================================ -->
-  <node pkg="cartographer_ros" type="cartographer_occupancy_grid_node"
+  <node unless="$(eval localization_mode == 'fix')"
+        pkg="cartographer_ros" type="cartographer_occupancy_grid_node"
         name="cartographer_occupancy_grid_node"
         args="-resolution 0.03"
         output="log" />

@@ -158,11 +158,21 @@ class WooshSensorBridgeNode:
         if not ok:
             raise RuntimeError(f"로봇 정보 조회 실패: {msg}")
 
-        rospy.loginfo(
-            "센서 브릿지 연결 성공 (scene=%s, map=%s)",
-            info.scene.scene_name,
-            info.scene.map_name,
-        )
+        # woosh_service_driver가 선택한 맵이 있으면 우선 표시
+        # (로컬 맵 선택 시 로봇 하드웨어 scene과 다를 수 있음)
+        selected_map = rospy.get_param("/woosh/selected_map_name", "")
+        selected_map_source = rospy.get_param("/woosh/selected_map_source", "")
+        if selected_map and selected_map != info.scene.scene_name:
+            rospy.loginfo(
+                "센서 브릿지 연결 성공 (활성 맵: %s [%s] / robot scene: %s)",
+                selected_map, selected_map_source, info.scene.scene_name,
+            )
+        else:
+            rospy.loginfo(
+                "센서 브릿지 연결 성공 (scene=%s, map=%s)",
+                info.scene.scene_name,
+                info.scene.map_name,
+            )
 
         # 초기 포즈·스캔 데이터로 상태 초기화
         if info.pose_speed:

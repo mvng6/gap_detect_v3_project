@@ -387,11 +387,13 @@ class StackLauncher:
     def start_cartographer(self):
         self._start_slam_stack("Cartographer", _find_cartographer_launch)
 
-    def start_cartographer_localization(self, state_file):
-        """Cartographer Pure Localization 모드로 기동한다.
+    def start_cartographer_localization(self, state_file, mode="nonfix"):
+        """Cartographer Localization 모드로 기동한다.
 
         Args:
             state_file: SLAM으로 생성된 .pbstream 파일 경로
+            mode: "fix"   — AMCL처럼 고정된 맵에서 위치 추정만 수행 (/map 갱신 없음)
+                  "nonfix" — 서브맵을 생성하며 /map 업데이트 + pose 보정 (기본값)
         """
         if not os.path.isfile(state_file):
             rospy.logerr(".pbstream 파일을 찾을 수 없습니다: %s", state_file)
@@ -405,17 +407,20 @@ class StackLauncher:
             rospy.logwarn("cartographer_localization.launch 파일을 찾을 수 없습니다.")
             return
 
+        localization_mode = "fix" if mode == "fix" else "nonfix"
         cmd = [
             "roslaunch", launch_file,
             f"robot_ip:={self.robot_ip}",
             f"robot_port:={self.robot_port}",
             f"state_file:={state_file}",
+            f"localization_mode:={localization_mode}",
             "launch_rviz:=true",
             "launch_sensor_bridge:=false",
         ]
 
-        self._pm.start("Cartographer Localization 스택", cmd)
-        rospy.loginfo("Cartographer Pure Localization 시작 (state_file=%s)", state_file)
+        stack_label = "Cartographer Localization (fix)" if mode == "fix" else "Cartographer Localization (nonfix)"
+        self._pm.start(f"{stack_label} 스택", cmd)
+        rospy.loginfo("Cartographer Localization 시작 [mode=%s] (state_file=%s)", mode, state_file)
 
 
 # ---------------------------------------------------------------------------
@@ -561,8 +566,8 @@ class SmoothTwistController:
         for i, e in enumerate(combined):
             rospy.loginfo("  [%d] %-30s  출처: %s", i, e["name"], e["source"])
 
-        # ── 4. 인덱스 2 선택 (기존 방식 유지) ──────────────────────────────
-        TARGET_INDEX = 5
+        # ── 4. 인덱스 선택  ──────────────────────────────────────────────
+        TARGET_INDEX = 4
         if len(combined) <= TARGET_INDEX:
             rospy.logwarn("통합 맵이 %d개 미만입니다. 인덱스 %d를 선택할 수 없습니다.",
                           TARGET_INDEX + 1, TARGET_INDEX)
@@ -588,12 +593,15 @@ class SmoothTwistController:
             if not _validate_map_file(target["path"]):
                 rospy.logerr("로컬 맵 파일 유효성 검사 실패: %s", target["path"])
                 return False
-            rospy.loginfo("로컬 맵 '%s' 선택됨 — AMCL 모드에서 활용 가능: %s",
+            rospy.loginfo("로컬 맵 '%s' 선택됨 — AMCL & Cartographer 모드에서 활용 가능: %s",
                           target["name"], target["path"])
 
         # ── 6. 선택된 맵 정보 저장 (carto_loc 등 후속 스택에서 참조) ──────
         self.selected_map_name = target["name"]
         self.selected_map_source = target["source"]
+        # 센서 브릿지(서브프로세스)가 참조할 수 있도록 ROS 파라미터로도 공유
+        rospy.set_param("/woosh/selected_map_name", target["name"])
+        rospy.set_param("/woosh/selected_map_source", target["source"])
 
         return True
 
@@ -782,8 +790,13 @@ def service_handler(req):
 
 
 def _parse_cli_args(argv):
-    """`rviz_on` / `amcl` / `gmap` / `carto_map` / `carto_loc` 플래그를 분리하고 나머지는 ROS argv로 유지."""
-    flags = {"rviz": False, "amcl": False, "gmap": False, "carto_map": False, "carto_loc": False}
+    """`rviz_on` / `amcl` / `gmap` / `carto_map` / `carto_loc_fix` / `carto_loc_nonfix` 플래그를 분리하고 나머지는 ROS argv로 유지."""
+    flags = {
+        "rviz": False, "amcl": False, "gmap": False,
+        "carto_map": False,
+        "carto_loc_fix": False,    # 고정 맵 localization (AMCL 유사)
+        "carto_loc_nonfix": False, # 서브맵 업데이트 포함 localization
+    }
     map_file = None
     state_file = None
     filtered = [argv[0]]
@@ -793,7 +806,8 @@ def _parse_cli_args(argv):
         "amcl": "amcl", "--amcl": "amcl",
         "gmap": "gmap", "--gmap": "gmap",
         "carto_map": "carto_map", "--carto_map": "carto_map",
-        "carto_loc": "carto_loc", "--carto_loc": "carto_loc",
+        "carto_loc_fix": "carto_loc_fix", "--carto_loc_fix": "carto_loc_fix",
+        "carto_loc_nonfix": "carto_loc_nonfix", "--carto_loc_nonfix": "carto_loc_nonfix",
     }
 
     for arg in argv[1:]:
@@ -860,7 +874,13 @@ def main():
     if flags["carto_map"]:
         launcher.start_cartographer()
 
-    if flags["carto_loc"]:
+    _carto_loc_mode = None
+    if flags["carto_loc_fix"]:
+        _carto_loc_mode = "fix"
+    elif flags["carto_loc_nonfix"]:
+        _carto_loc_mode = "nonfix"
+
+    if _carto_loc_mode is not None:
         if state_file:
             # CLI에서 명시적으로 지정된 경우 그대로 사용
             resolved_state = state_file
@@ -878,7 +898,7 @@ def main():
                                       controller.selected_map_name)
                         resolved_state = rospy.get_param(
                             "~state_file",
-                            "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_cartographer_map.pbstream"
+                            "/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.pbstream"
                         )
                 else:
                     rospy.logwarn("맵 선택이 완료되었으나 선택된 맵이 없습니다. 기본 경로 사용")
@@ -892,11 +912,13 @@ def main():
                     "~state_file",
                     "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_cartographer_map.pbstream"
                 )
-        launcher.start_cartographer_localization(resolved_state)
+        launcher.start_cartographer_localization(resolved_state, mode=_carto_loc_mode)
 
     rospy.loginfo("서버 시작됨! (Quintic Minimum Jerk 정밀 제어)")
     rospy.loginfo("  rosservice call /mobile_move \"{distance: 0.3}\"")
-    rospy.loginfo("  옵션: rviz_on | amcl [map_file:=...] | gmap | carto_map | carto_loc [state_file:=...]")
+    rospy.loginfo("  옵션: rviz_on | amcl [map_file:=...] | gmap | carto_map")
+    rospy.loginfo("         carto_loc_fix [state_file:=...]      — 고정 맵 localization (AMCL 유사)")
+    rospy.loginfo("         carto_loc_nonfix [state_file:=...]   — 서브맵 업데이트 + pose 보정")
     rospy.spin()
 
 
