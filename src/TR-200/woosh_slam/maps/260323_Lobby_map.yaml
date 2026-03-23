@@ -1,4 +1,4 @@
-image: /root/catkin_ws/src/TR-200/woosh_navigation/maps/260323_Lobby_map.pgm
+image: 260323_Lobby_map.pgm
 resolution: 0.030000
 origin: [-14.317087, -15.661923, 0.000000]
 negate: 0

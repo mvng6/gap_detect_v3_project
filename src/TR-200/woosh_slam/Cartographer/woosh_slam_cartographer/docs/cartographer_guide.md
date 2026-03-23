@@ -50,8 +50,8 @@ rosservice call /mobile_move "{distance: -1.0}"  # 1m 후진
 roslaunch woosh_slam_cartographer save_map.launch map_name:=my_map
 
 # 저장 결과
-# /root/catkin_ws/src/TR-200/woosh_navigation/maps/my_map.pgm
-# /root/catkin_ws/src/TR-200/woosh_navigation/maps/my_map.yaml
+# /root/catkin_ws/src/TR-200/woosh_slam/maps/my_map.pgm
+# /root/catkin_ws/src/TR-200/woosh_slam/maps/my_map.yaml
 ```
 
 ### 5. 저장된 지도로 AMCL 로컬리제이션 실행
@@ -59,7 +59,7 @@ roslaunch woosh_slam_cartographer save_map.launch map_name:=my_map
 ```bash
 # Cartographer로 생성한 지도를 AMCL에서 즉시 사용 가능
 rosrun woosh_bringup woosh_service_driver.py amcl \
-  map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/my_map.yaml
+  map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/my_map.yaml
 ```
 
 ---

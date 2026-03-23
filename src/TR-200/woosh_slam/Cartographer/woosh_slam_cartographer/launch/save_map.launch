@@ -23,7 +23,7 @@
 
        저장된 지도는 즉시 AMCL에서 사용할 수 있습니다:
          rosrun woosh_bringup woosh_service_driver.py amcl \
-           map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/{map_name}.yaml
+           map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/{map_name}.yaml
        ============================================================ -->
 
   <!-- 저장할 지도 이름 (확장자 제외) -->
@@ -32,7 +32,7 @@
   <!-- 저장 디렉터리
        기본값: AMCL/GMapping 패키지와 공유하는 maps 폴더
        → 저장 즉시 amcl.launch의 map_file 인자로 사용 가능 -->
-  <arg name="output_dir"  default="/root/catkin_ws/src/TR-200/woosh_navigation/maps" />
+  <arg name="output_dir"  default="/root/catkin_ws/src/TR-200/woosh_slam/maps" />
 
   <!-- map_saver: /map 토픽 구독 → .pgm + .yaml 저장 후 자동 종료 -->
   <node pkg="map_server" type="map_saver"

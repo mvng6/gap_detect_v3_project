@@ -865,7 +865,7 @@ if __name__ == "__main__":
         robot_ip = rospy.get_param("~robot_ip", "169.254.128.2")
         robot_port = rospy.get_param("~robot_port", 5480)
         resolved_map = map_file or rospy.get_param(
-            "~map_file", "/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml"
+            "~map_file", "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml"
         )
         start_amcl_support(robot_ip, robot_port, resolved_map)
 
