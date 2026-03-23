@@ -1,0 +1,35 @@
+<launch>
+  <!-- ============================================================
+       save_state.launch — Cartographer SLAM 상태를 .pbstream으로 저장
+       ============================================================
+       cartographer.launch가 실행 중인 상태에서 별도 터미널로 실행합니다.
+       저장된 .pbstream 파일은 pure localization 모드에서 사용합니다.
+
+       실행 예시:
+         # 기본 저장
+         roslaunch woosh_slam_cartographer save_state.launch
+
+         # 이름 지정
+         roslaunch woosh_slam_cartographer save_state.launch \
+           map_name:=my_carto_map
+
+       저장 결과:
+         {output_dir}/{map_name}.pbstream
+
+       Pure Localization으로 사용:
+         roslaunch woosh_slam_cartographer cartographer_localization.launch \
+           state_file:={output_dir}/{map_name}.pbstream
+
+       참고: .pgm/.yaml 맵도 함께 저장하려면 save_map.launch도 실행하세요.
+       ============================================================ -->
+
+  <arg name="map_name"    default="woosh_cartographer_map" />
+  <arg name="output_dir"  default="/root/catkin_ws/src/TR-200/woosh_slam/maps" />
+
+  <!-- rosrun 스크립트를 통해 finish_trajectory + write_state 서비스 호출 -->
+  <node pkg="woosh_slam_cartographer" type="save_cartographer_state.sh"
+        name="save_cartographer_state"
+        args="$(arg output_dir)/$(arg map_name).pbstream"
+        output="screen" />
+
+</launch>

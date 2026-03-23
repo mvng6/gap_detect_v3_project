@@ -11,7 +11,7 @@ import signal
 import subprocess
 import atexit
 from queue import Queue, Empty
-from threading import Thread
+from threading import Thread, Event
 
 # === Python 경로 설정 ===
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -120,6 +120,30 @@ def _find_local_maps_dir():
     return None
 
 
+def _find_pbstream_for_map(map_name):
+    """맵 이름에 대응하는 .pbstream 파일을 탐색한다.
+
+    woosh_slam/maps 디렉터리에서 map_name.pbstream 파일을 찾는다.
+
+    Returns:
+        str or None: .pbstream 파일의 절대 경로, 없으면 None
+    """
+    maps_dir = _find_local_maps_dir()
+    if maps_dir is None:
+        return None
+
+    pbstream_path = os.path.join(maps_dir, f"{map_name}.pbstream")
+    if os.path.isfile(pbstream_path):
+        return pbstream_path
+
+    # carto_ 접두사가 붙은 파일도 탐색 (예: carto_map_name.pbstream)
+    carto_path = os.path.join(maps_dir, f"carto_{map_name}.pbstream")
+    if os.path.isfile(carto_path):
+        return carto_path
+
+    return None
+
+
 def _get_local_map_names():
     """woosh_slam/maps 디렉터리에서 유효한 맵 이름 목록을 반환한다.
 
@@ -166,6 +190,13 @@ def _find_cartographer_launch():
     return _resolve_file(
         os.path.abspath(os.path.join(script_dir, "../../woosh_slam/Cartographer/woosh_slam_cartographer/launch/cartographer.launch")),
         rospkg_fallback=("woosh_slam_cartographer", os.path.join("launch", "cartographer.launch")),
+    )
+
+
+def _find_cartographer_localization_launch():
+    return _resolve_file(
+        os.path.abspath(os.path.join(script_dir, "../../woosh_slam/Cartographer/woosh_slam_cartographer/launch/cartographer_localization.launch")),
+        rospkg_fallback=("woosh_slam_cartographer", os.path.join("launch", "cartographer_localization.launch")),
     )
 
 
@@ -356,6 +387,36 @@ class StackLauncher:
     def start_cartographer(self):
         self._start_slam_stack("Cartographer", _find_cartographer_launch)
 
+    def start_cartographer_localization(self, state_file):
+        """Cartographer Pure Localization 모드로 기동한다.
+
+        Args:
+            state_file: SLAM으로 생성된 .pbstream 파일 경로
+        """
+        if not os.path.isfile(state_file):
+            rospy.logerr(".pbstream 파일을 찾을 수 없습니다: %s", state_file)
+            rospy.logerr("  SLAM으로 맵을 먼저 생성하세요:")
+            rospy.logerr("    1. roslaunch woosh_slam_cartographer cartographer.launch")
+            rospy.logerr("    2. roslaunch woosh_slam_cartographer save_state.launch map_name:=my_map")
+            return
+
+        launch_file = _find_cartographer_localization_launch()
+        if launch_file is None:
+            rospy.logwarn("cartographer_localization.launch 파일을 찾을 수 없습니다.")
+            return
+
+        cmd = [
+            "roslaunch", launch_file,
+            f"robot_ip:={self.robot_ip}",
+            f"robot_port:={self.robot_port}",
+            f"state_file:={state_file}",
+            "launch_rviz:=true",
+            "launch_sensor_bridge:=false",
+        ]
+
+        self._pm.start("Cartographer Localization 스택", cmd)
+        rospy.loginfo("Cartographer Pure Localization 시작 (state_file=%s)", state_file)
+
 
 # ---------------------------------------------------------------------------
 # 모션 프로파일 (모바일 로봇의 부드러운 가감속)
@@ -409,6 +470,11 @@ class SmoothTwistController:
         self.command_queue = Queue()
         self.result_queue = Queue()
 
+        # 맵 선택 결과 (carto_loc 연동용)
+        self.selected_map_name = None   # 선택된 맵 이름 (확장자 없음)
+        self.selected_map_source = None # "robot" 또는 "local"
+        self.map_ready_event = Event()  # 맵 선택 완료 시그널
+
     # -- 연결 / 초기화 --
 
     async def connect(self):
@@ -437,6 +503,7 @@ class SmoothTwistController:
         await self._log_final_state()
 
         rospy.loginfo("=== 네비게이션 설정 완료 ===")
+        self.map_ready_event.set()
 
     async def _ensure_map_loaded(self):
         """현재 맵 상태를 확인하고 필요하면 맵을 로드한다.
@@ -495,7 +562,7 @@ class SmoothTwistController:
             rospy.loginfo("  [%d] %-30s  출처: %s", i, e["name"], e["source"])
 
         # ── 4. 인덱스 2 선택 (기존 방식 유지) ──────────────────────────────
-        TARGET_INDEX = 4
+        TARGET_INDEX = 5
         if len(combined) <= TARGET_INDEX:
             rospy.logwarn("통합 맵이 %d개 미만입니다. 인덱스 %d를 선택할 수 없습니다.",
                           TARGET_INDEX + 1, TARGET_INDEX)
@@ -523,6 +590,10 @@ class SmoothTwistController:
                 return False
             rospy.loginfo("로컬 맵 '%s' 선택됨 — AMCL 모드에서 활용 가능: %s",
                           target["name"], target["path"])
+
+        # ── 6. 선택된 맵 정보 저장 (carto_loc 등 후속 스택에서 참조) ──────
+        self.selected_map_name = target["name"]
+        self.selected_map_source = target["source"]
 
         return True
 
@@ -711,16 +782,18 @@ def service_handler(req):
 
 
 def _parse_cli_args(argv):
-    """`rviz_on` / `amcl` / `gmap` / `carto` 플래그를 분리하고 나머지는 ROS argv로 유지."""
-    flags = {"rviz": False, "amcl": False, "gmap": False, "carto": False}
+    """`rviz_on` / `amcl` / `gmap` / `carto_map` / `carto_loc` 플래그를 분리하고 나머지는 ROS argv로 유지."""
+    flags = {"rviz": False, "amcl": False, "gmap": False, "carto_map": False, "carto_loc": False}
     map_file = None
+    state_file = None
     filtered = [argv[0]]
 
     FLAG_MAP = {
         "rviz_on": "rviz", "--rviz_on": "rviz",
         "amcl": "amcl", "--amcl": "amcl",
         "gmap": "gmap", "--gmap": "gmap",
-        "carto": "carto", "--carto": "carto",
+        "carto_map": "carto_map", "--carto_map": "carto_map",
+        "carto_loc": "carto_loc", "--carto_loc": "carto_loc",
     }
 
     for arg in argv[1:]:
@@ -733,9 +806,12 @@ def _parse_cli_args(argv):
         if key.startswith("map_file:="):
             map_file = arg[len("map_file:="):]
             continue
+        if key.startswith("state_file:="):
+            state_file = arg[len("state_file:="):]
+            continue
         filtered.append(arg)
 
-    return flags, map_file, filtered
+    return flags, map_file, state_file, filtered
 
 
 def _run_asyncio():
@@ -752,7 +828,7 @@ def _run_asyncio():
 
 
 def main():
-    flags, map_file, init_argv = _parse_cli_args(sys.argv)
+    flags, map_file, state_file, init_argv = _parse_cli_args(sys.argv)
 
     rospy.init_node('mobile_move_server', anonymous=False, argv=init_argv)
 
@@ -781,12 +857,46 @@ def main():
     if flags["gmap"]:
         launcher.start_gmapping()
 
-    if flags["carto"]:
+    if flags["carto_map"]:
         launcher.start_cartographer()
+
+    if flags["carto_loc"]:
+        if state_file:
+            # CLI에서 명시적으로 지정된 경우 그대로 사용
+            resolved_state = state_file
+        else:
+            # _ensure_map_loaded()에서 선택된 맵 이름으로 .pbstream 자동 탐색
+            rospy.loginfo("맵 선택 완료 대기 중... (최대 30초)")
+            if controller is not None and controller.map_ready_event.wait(timeout=30.0):
+                if controller.selected_map_name:
+                    resolved_state = _find_pbstream_for_map(controller.selected_map_name)
+                    if resolved_state:
+                        rospy.loginfo("선택된 맵 '%s'에 대응하는 .pbstream 파일 발견: %s",
+                                      controller.selected_map_name, resolved_state)
+                    else:
+                        rospy.logwarn("선택된 맵 '%s'에 대응하는 .pbstream 파일이 없습니다. 기본 경로 사용",
+                                      controller.selected_map_name)
+                        resolved_state = rospy.get_param(
+                            "~state_file",
+                            "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_cartographer_map.pbstream"
+                        )
+                else:
+                    rospy.logwarn("맵 선택이 완료되었으나 선택된 맵이 없습니다. 기본 경로 사용")
+                    resolved_state = rospy.get_param(
+                        "~state_file",
+                        "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_cartographer_map.pbstream"
+                    )
+            else:
+                rospy.logwarn("맵 선택 대기 타임아웃. 기본 경로 사용")
+                resolved_state = rospy.get_param(
+                    "~state_file",
+                    "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_cartographer_map.pbstream"
+                )
+        launcher.start_cartographer_localization(resolved_state)
 
     rospy.loginfo("서버 시작됨! (Quintic Minimum Jerk 정밀 제어)")
     rospy.loginfo("  rosservice call /mobile_move \"{distance: 0.3}\"")
-    rospy.loginfo("  옵션: rviz_on | amcl [map_file:=...] | gmap | carto")
+    rospy.loginfo("  옵션: rviz_on | amcl [map_file:=...] | gmap | carto_map | carto_loc [state_file:=...]")
     rospy.spin()
 
 

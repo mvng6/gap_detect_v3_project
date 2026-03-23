@@ -20,6 +20,12 @@ catkin_package(
     tf2_ros
 )
 
+# 스크립트 설치
+catkin_install_python(PROGRAMS
+  scripts/save_cartographer_state.sh
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
 # launch, config, rviz 디렉터리 설치
 install(
   DIRECTORY launch config rviz

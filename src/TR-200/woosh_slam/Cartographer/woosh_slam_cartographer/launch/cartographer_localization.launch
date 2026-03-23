@@ -1,0 +1,108 @@
+<launch>
+  <!-- ============================================================
+       woosh_slam_cartographer — Pure Localization 모드
+       ============================================================
+       SLAM으로 생성된 .pbstream 파일을 로드하여 위치 추정만 수행합니다.
+       새로운 맵을 생성하지 않고 기존 맵에서 로봇의 위치를 추적합니다.
+
+       사전 준비:
+         1. SLAM 실행:
+            roslaunch woosh_slam_cartographer cartographer.launch
+         2. 맵 상태 저장 (SLAM 실행 중 별도 터미널):
+            roslaunch woosh_slam_cartographer save_state.launch
+         3. SLAM 종료 후 로컬라이제이션 실행:
+            roslaunch woosh_slam_cartographer cartographer_localization.launch \
+              state_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_cartographer_map.pbstream
+
+       woosh_service_driver 통합 실행:
+         rosrun woosh_bringup woosh_service_driver.py carto_loc \
+           state_file:=/path/to/map.pbstream
+
+       TF 트리 (SLAM과 동일):
+         map (Cartographer 발행: map→odom)
+          └── odom
+               └── base_link (woosh_sensor_bridge 발행: odom→base_link)
+                    └── laser (static_tf: z=0.25m)
+       ============================================================ -->
+
+  <!-- 로봇 연결 설정 -->
+  <arg name="robot_ip"          default="169.254.128.2" />
+  <arg name="robot_port"        default="5480" />
+
+  <!-- Pure Localization에 필요한 .pbstream 파일 경로 -->
+  <arg name="state_file" />
+
+  <!-- TF 프레임 이름 -->
+  <arg name="odom_frame"        default="odom" />
+  <arg name="base_frame"        default="base_link" />
+  <arg name="laser_frame"       default="laser" />
+
+  <!-- 레이저 센서의 base_link 기준 오프셋 (미터/라디안) -->
+  <arg name="laser_offset_x"    default="0.0" />
+  <arg name="laser_offset_y"    default="0.0" />
+  <arg name="laser_offset_z"    default="0.25" />
+  <arg name="laser_offset_yaw"  default="0.0" />
+
+  <!-- 센서 브릿지 발행 주기 (Hz) -->
+  <arg name="publish_hz"        default="10.0" />
+
+  <!-- 센서 브릿지 기동 여부 -->
+  <arg name="launch_sensor_bridge" default="true" />
+
+  <!-- RViz 실행 여부 -->
+  <arg name="launch_rviz"       default="true" />
+  <arg name="rviz_config"       default="$(find woosh_slam_cartographer)/rviz/cartographer_debug.rviz" />
+
+  <!-- ============================================================
+       1. 정적 TF: base_link → laser
+       ============================================================ -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="base_link_to_laser"
+        args="$(arg laser_offset_x) $(arg laser_offset_y) $(arg laser_offset_z)
+              $(arg laser_offset_yaw) 0.0 0.0
+              $(arg base_frame) $(arg laser_frame)" />
+
+  <!-- ============================================================
+       2. woosh_sensor_bridge
+       ============================================================ -->
+  <node if="$(arg launch_sensor_bridge)"
+        pkg="woosh_sensor_bridge" type="woosh_sensor_bridge.py"
+        name="woosh_sensor_bridge"
+        output="screen">
+    <param name="robot_ip"       value="$(arg robot_ip)" />
+    <param name="robot_port"     value="$(arg robot_port)" />
+    <param name="robot_identity" value="cartographer_loc_bridge" />
+    <param name="odom_frame"     value="$(arg odom_frame)" />
+    <param name="base_frame"     value="$(arg base_frame)" />
+    <param name="laser_frame"    value="$(arg laser_frame)" />
+    <param name="publish_hz"     value="$(arg publish_hz)" />
+  </node>
+
+  <!-- ============================================================
+       3. cartographer_node — Pure Localization 모드
+          -load_state_filename: SLAM으로 생성된 .pbstream 파일 로드
+          cartographer_2d_localization.lua:
+            pure_localization_trimmer 활성화
+       ============================================================ -->
+  <node pkg="cartographer_ros" type="cartographer_node" name="cartographer_node"
+        args="-configuration_directory $(find woosh_slam_cartographer)/config
+              -configuration_basename cartographer_2d_localization.lua
+              -load_state_filename $(arg state_file)"
+        output="log" />
+
+  <!-- ============================================================
+       4. cartographer_occupancy_grid_node — /map 발행
+       ============================================================ -->
+  <node pkg="cartographer_ros" type="cartographer_occupancy_grid_node"
+        name="cartographer_occupancy_grid_node"
+        args="-resolution 0.03"
+        output="log" />
+
+  <!-- ============================================================
+       5. RViz (선택적)
+       ============================================================ -->
+  <node if="$(arg launch_rviz)"
+        pkg="rviz" type="rviz" name="cartographer_rviz"
+        args="-d $(arg rviz_config)"
+        output="screen" />
+
+</launch>
