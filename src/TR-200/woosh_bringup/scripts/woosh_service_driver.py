@@ -120,6 +120,18 @@ def _find_local_maps_dir():
     return None
 
 
+def _find_yaml_for_map(map_name):
+    """맵 이름에 대응하는 .yaml 파일 경로를 로컬 맵 목록에서 탐색한다.
+
+    Returns:
+        str or None: .yaml 파일의 절대 경로, 없으면 None
+    """
+    for m in _get_local_map_names():
+        if m["name"] == map_name:
+            return m["path"]
+    return None
+
+
 def _find_pbstream_for_map(map_name):
     """맵 이름에 대응하는 .pbstream 파일을 탐색한다.
 
@@ -863,9 +875,29 @@ def main():
         launcher.start_rviz(use_amcl_rviz=flags["amcl"])
 
     if flags["amcl"]:
-        resolved_map = map_file or rospy.get_param(
-            "~map_file", "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml"
-        )
+        if map_file:
+            # CLI에서 명시적으로 지정된 경우 그대로 사용
+            resolved_map = map_file
+        else:
+            # _ensure_map_loaded()에서 선택된 맵 이름으로 .yaml 자동 탐색
+            rospy.loginfo("맵 선택 완료 대기 중... (최대 30초)")
+            resolved_map = rospy.get_param(
+                "~map_file", "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml"
+            )
+            if controller is not None and controller.map_ready_event.wait(timeout=30.0):
+                if controller.selected_map_name:
+                    found = _find_yaml_for_map(controller.selected_map_name)
+                    if found:
+                        rospy.loginfo("선택된 맵 '%s'에 대응하는 .yaml 파일 발견: %s",
+                                      controller.selected_map_name, found)
+                        resolved_map = found
+                    else:
+                        rospy.logwarn("선택된 맵 '%s'에 대응하는 .yaml 파일이 없습니다. 기본 경로 사용",
+                                      controller.selected_map_name)
+                else:
+                    rospy.logwarn("맵 선택이 완료되었으나 선택된 맵이 없습니다. 기본 경로 사용")
+            else:
+                rospy.logwarn("맵 선택 대기 타임아웃. 기본 경로 사용")
         launcher.start_amcl(resolved_map)
 
     if flags["gmap"]:
