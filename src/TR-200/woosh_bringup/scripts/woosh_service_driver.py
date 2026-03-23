@@ -212,6 +212,20 @@ def _find_cartographer_localization_launch():
     )
 
 
+def _find_costmap_launch():
+    return _resolve_file(
+        os.path.abspath(os.path.join(script_dir, "../../woosh_navigation/Costmap/woosh_costmap/launch/global_costmap.launch")),
+        rospkg_fallback=("woosh_costmap", os.path.join("launch", "global_costmap.launch")),
+    )
+
+
+def _find_costmap_rviz_config():
+    return _resolve_file(
+        os.path.abspath(os.path.join(script_dir, "../../woosh_navigation/Costmap/woosh_costmap/rviz/costmap_debug.rviz")),
+        rospkg_fallback=("woosh_costmap", os.path.join("rviz", "costmap_debug.rviz")),
+    )
+
+
 def _find_rviz_binary():
     return shutil.which("rviz") or (
         "/opt/ros/noetic/bin/rviz"
@@ -372,6 +386,36 @@ class StackLauncher:
 
         self._pm.start("AMCL 스택", cmd)
         rospy.loginfo("AMCL 스택 시작 (map_file=%s)", map_file)
+
+    # -- Global Costmap --
+
+    def start_costmap(self, map_file, launch_map_server=True, launch_map_odom_tf=False):
+        if not _validate_map_file(map_file):
+            rospy.logerr("Global Costmap을 시작하지 않습니다. 위 오류를 해결한 후 재시작하세요.")
+            return
+
+        costmap_launch = _find_costmap_launch()
+        if costmap_launch is None:
+            rospy.logwarn("global_costmap.launch 파일을 찾을 수 없습니다. Global Costmap을 시작하지 않습니다.")
+            return
+
+        cmd = [
+            "roslaunch", costmap_launch,
+            f"robot_ip:={self.robot_ip}",
+            f"robot_port:={self.robot_port}",
+            f"map_file:={map_file}",
+            "launch_rviz:=false",
+            "launch_sensor_bridge:=false",
+            f"launch_map_server:={'true' if launch_map_server else 'false'}",
+            f"launch_map_odom_tf:={'true' if launch_map_odom_tf else 'false'}",
+        ]
+
+        costmap_rviz_config = _find_costmap_rviz_config()
+        if costmap_rviz_config:
+            cmd.append(f"rviz_config:={costmap_rviz_config}")
+
+        self._pm.start("Global Costmap 스택", cmd)
+        rospy.loginfo("Global Costmap 시작 (map_file=%s)", map_file)
 
     # -- SLAM 공통 --
 
@@ -802,12 +846,13 @@ def service_handler(req):
 
 
 def _parse_cli_args(argv):
-    """`rviz_on` / `amcl` / `gmap` / `carto_map` / `carto_loc_fix` / `carto_loc_nonfix` 플래그를 분리하고 나머지는 ROS argv로 유지."""
+    """`rviz_on` / `amcl` / `gmap` / `carto_map` / `carto_loc_fix` / `carto_loc_nonfix` / `costmap` 플래그를 분리하고 나머지는 ROS argv로 유지."""
     flags = {
         "rviz": False, "amcl": False, "gmap": False,
         "carto_map": False,
         "carto_loc_fix": False,    # 고정 맵 localization (AMCL 유사)
         "carto_loc_nonfix": False, # 서브맵 업데이트 포함 localization
+        "costmap": False,          # Global Costmap (costmap_2d)
     }
     map_file = None
     state_file = None
@@ -820,6 +865,7 @@ def _parse_cli_args(argv):
         "carto_map": "carto_map", "--carto_map": "carto_map",
         "carto_loc_fix": "carto_loc_fix", "--carto_loc_fix": "carto_loc_fix",
         "carto_loc_nonfix": "carto_loc_nonfix", "--carto_loc_nonfix": "carto_loc_nonfix",
+        "costmap": "costmap", "--costmap": "costmap",
     }
 
     for arg in argv[1:]:
@@ -946,11 +992,27 @@ def main():
                 )
         launcher.start_cartographer_localization(resolved_state, mode=_carto_loc_mode)
 
+    if flags["costmap"]:
+        # AMCL/Cartographer loc이 이미 map_server를 기동 중이면 중복 방지
+        has_localization = flags["amcl"] or flags["carto_loc_fix"] or flags["carto_loc_nonfix"]
+        launch_map_server = not has_localization
+        # localization이 없으면 map→odom 정적 TF를 직접 발행해 costmap이 동작하도록 함
+        launch_map_odom_tf = not has_localization
+        if map_file:
+            costmap_map = map_file
+        else:
+            costmap_map = rospy.get_param(
+                "~map_file", "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml"
+            )
+        launcher.start_costmap(costmap_map, launch_map_server=launch_map_server,
+                               launch_map_odom_tf=launch_map_odom_tf)
+
     rospy.loginfo("서버 시작됨! (Quintic Minimum Jerk 정밀 제어)")
     rospy.loginfo("  rosservice call /mobile_move \"{distance: 0.3}\"")
     rospy.loginfo("  옵션: rviz_on | amcl [map_file:=...] | gmap | carto_map")
     rospy.loginfo("         carto_loc_fix [state_file:=...]      — 고정 맵 localization (AMCL 유사)")
     rospy.loginfo("         carto_loc_nonfix [state_file:=...]   — 서브맵 업데이트 + pose 보정")
+    rospy.loginfo("         costmap [map_file:=...]              — Global Costmap (costmap_2d)")
     rospy.spin()
 
 

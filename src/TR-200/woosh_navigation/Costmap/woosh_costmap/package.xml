@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>woosh_costmap</name>
+  <version>0.1.0</version>
+  <description>Global Costmap package for Woosh TR-200 mobile robot (ROS1 Noetic navigation stack).</description>
+
+  <maintainer email="djlee2@katech.re.kr">LDJ</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>costmap_2d</depend>
+  <depend>geometry_msgs</depend>
+  <depend>map_server</depend>
+  <depend>nav_msgs</depend>
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+
+  <!-- woosh_sensor_bridge.py를 launch에서 기동 (런타임 전용) -->
+  <exec_depend>woosh_sensor_bridge</exec_depend>
+
+  <exec_depend>rviz</exec_depend>
+
+  <export/>
+</package>

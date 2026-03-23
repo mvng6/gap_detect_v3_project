@@ -76,6 +76,18 @@ rosrun woosh_bringup woosh_service_driver.py carto_loc_nonfix
 
 > 생성한 지도 저장 방법은 아래 `실행 방법 > 지도 생성 및 지도 파일 준비` 섹션을 참조하세요.
 
+Global Costmap과 함께 실행하려면:
+
+```bash
+rosrun woosh_bringup woosh_service_driver.py costmap map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
+```
+
+AMCL + Global Costmap을 함께 실행하려면 (map_server 중복 방지):
+
+```bash
+rosrun woosh_bringup woosh_service_driver.py amcl costmap map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
+```
+
 로컬라이제이션(AMCL, 위치 추정)과 함께 실행하려면:
 
 ```bash
@@ -416,13 +428,16 @@ a0509, **a0912**, e0509, h2017, h2515, m0609, m0617, m1013, m1509
 - [ ] 재시작 후 재로컬라이제이션 절차 검증
 
 ### 7. Costmap 구성
-- [ ] Global Costmap 구성
+- [x] Global Costmap 구성
+  - [x] Static Layer 구성 (map_server `/map` 구독)
+  - [x] Obstacle Layer 구성 (LiDAR `/scan` 기반 동적 장애물)
+  - [x] Inflation Layer 구성 (inflation_radius: 0.55m, cost_scaling_factor: 3.0)
+  - [x] `woosh_costmap` 패키지 생성 (`src/TR-200/woosh_navigation/Costmap/woosh_costmap/`)
+  - [x] `woosh_service_driver.py` — `costmap` CLI 플래그 추가
+  - [ ] 장애물 반영 / 제거 동작 확인 (실기 테스트 필요)
+  - [ ] 동적 장애물 대응 여부 점검
+  - [ ] inflation_radius / cost_scaling_factor 파라미터 튜닝
 - [ ] Local Costmap 구성
-- [ ] Static Layer 구성
-- [ ] Obstacle Layer 구성
-- [ ] Inflation Layer 구성
-- [ ] 장애물 반영 / 제거 동작 확인
-- [ ] 동적 장애물 대응 여부 점검
 
 ### 8. 경로 계획 및 자율주행
 - [ ] 자율 내비게이션 (`move_base`)

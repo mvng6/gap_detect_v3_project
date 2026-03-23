@@ -1,0 +1,98 @@
+# ================================================================
+# Global Costmap 파라미터 — Woosh TR-200
+# ================================================================
+# Static Map 기반 전역 비용 맵 구성
+# 레이어 구성: StaticLayer → ObstacleLayer → InflationLayer
+#
+# 적용 예시:
+#   <rosparam file="$(find woosh_costmap)/config/global_costmap_params.yaml"
+#             command="load" ns="global_costmap" />
+
+global_costmap:
+
+  # ----------------------------------------------------------------
+  # 프레임 설정
+  # ----------------------------------------------------------------
+  global_frame: map               # 전역 기준 프레임 (map_server가 발행)
+  robot_base_frame: base_link     # 로봇 본체 프레임
+
+  # ----------------------------------------------------------------
+  # 맵 크기 및 해상도
+  # ----------------------------------------------------------------
+  static_map: true                # map_server의 /map 토픽 구독
+  rolling_window: false           # 전역 맵은 고정 (rolling 불필요)
+
+  # 0.05m 해상도 사용 (맵 원본 0.03m보다 낮게 설정)
+  # → NUC 메모리/CPU 절약. move_base 통합 후 성능 이슈 발생 시 0.03으로 조정.
+  resolution: 0.05
+
+  # ----------------------------------------------------------------
+  # 업데이트 주기
+  # ----------------------------------------------------------------
+  update_frequency: 2.0           # Hz — 전역 맵은 낮은 빈도 충분
+  publish_frequency: 1.0          # Hz — RViz 시각화용
+
+  # ----------------------------------------------------------------
+  # TF 허용 오차
+  # WebSocket 통신 지연(~100ms) 대응, AMCL 설정(0.5s)과 동일
+  # ----------------------------------------------------------------
+  transform_tolerance: 0.5
+
+  # ----------------------------------------------------------------
+  # 레이어 플러그인 (순서: static → obstacle → inflation)
+  # ----------------------------------------------------------------
+  plugins:
+    - {name: static_layer,    type: "costmap_2d::StaticLayer"}
+    - {name: obstacle_layer,  type: "costmap_2d::ObstacleLayer"}
+    - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
+
+  # ----------------------------------------------------------------
+  # Static Layer — map_server의 /map 구독
+  # ----------------------------------------------------------------
+  static_layer:
+    map_topic: /map
+    subscribe_to_updates: true    # 맵 갱신 수신 (map_server가 재발행 시 반영)
+    track_unknown_space: true     # 미지 영역 유지 (NO_INFORMATION, 값: -1)
+    unknown_cost_value: 255       # 맵 파일에서 unknown 셀 값
+    lethal_cost_threshold: 100    # 점유율 >= 100 → 치명적 장애물(Lethal)
+    trinary_costmap: true         # 3값 모드: 자유(0) / 미지(255) / 장애물(254)
+
+  # ----------------------------------------------------------------
+  # Obstacle Layer — LiDAR 기반 동적 장애물
+  # ----------------------------------------------------------------
+  obstacle_layer:
+    enabled: true
+    combination_method: 1         # 1 = Maximum (소스 간 최대값 채택)
+    observation_sources: laser_scan
+
+    laser_scan:
+      topic: /scan
+      sensor_frame: laser
+      data_type: LaserScan
+      marking: true
+      clearing: true
+      min_obstacle_height: 0.0
+      max_obstacle_height: 2.0
+      obstacle_range: 6.0
+      raytrace_range: 8.0
+      inf_is_valid: false
+
+  # ----------------------------------------------------------------
+  # Inflation Layer — 장애물 주변 비용 팽창
+  #
+  # TR-200 치수:
+  #   내접 반경 (inscribed)    = 0.45 / 2 = 0.225m
+  #   외접 반경 (circumscribed) = sqrt(0.325² + 0.225²) = 0.395m
+  #
+  # inflation_radius = 0.55m
+  #   = 외접 반경(0.395m) + 0.155m 안전 마진
+  #   마진 구성: 합성 오도메트리 오차 ~5cm + WebSocket 지연 보정 ~5cm + 여유 ~5.5cm
+  #
+  # cost_scaling_factor = 3.0
+  #   비용 감쇠: cost = 253 * exp(-3.0 * (d - inscribed_r))
+  #   중간 수준 감쇠 — 좁은 통로 진입 허용하면서도 여유 공간 선호
+  # ----------------------------------------------------------------
+  inflation_layer:
+    enabled: true
+    inflation_radius: 0.55
+    cost_scaling_factor: 3.0

@@ -1,0 +1,35 @@
+# ================================================================
+# Costmap 공통 파라미터 — Woosh TR-200 (0.65m x 0.45m, 차동 구동)
+# ================================================================
+# 이 파일은 Global Costmap과 향후 추가될 Local Costmap이 공유하는
+# footprint 및 센서 소스 파라미터를 정의합니다.
+#
+# 적용 예시:
+#   <rosparam file="$(find woosh_costmap)/config/costmap_common_params.yaml"
+#             command="load" ns="global_costmap" />
+
+# ----------------------------------------------------------------
+# 로봇 Footprint (직사각형 폴리곤)
+# TR-200 물리 치수: 길이 0.65m, 폭 0.45m
+# base_link 기준 각 꼭짓점 좌표 [x, y] (단위: m)
+# ----------------------------------------------------------------
+footprint: [[-0.325, -0.225], [-0.325, 0.225], [0.325, 0.225], [0.325, -0.225]]
+footprint_padding: 0.02           # 안전 마진 2cm (총 footprint +4cm 팽창)
+
+# ----------------------------------------------------------------
+# 센서 소스 — 2D LiDAR (/scan)
+# ----------------------------------------------------------------
+observation_sources: laser_scan
+
+laser_scan:
+  topic: /scan
+  sensor_frame: laser
+  data_type: LaserScan
+  marking: true                   # 장애물 마킹 활성화
+  clearing: true                  # 자유 공간 클리어링 활성화
+  min_obstacle_height: 0.0        # 바닥면부터 장애물 감지
+  max_obstacle_height: 2.0        # 2m 이하 장애물 감지
+  obstacle_range: 6.0             # 장애물 마킹 최대 범위 (LiDAR max 8m의 75%)
+                                  # → 경계 부근 노이즈 배제
+  raytrace_range: 8.0             # 자유 공간 클리어링 범위 (LiDAR 전체 범위)
+  inf_is_valid: false             # inf 값은 유효 반환값으로 처리하지 않음
