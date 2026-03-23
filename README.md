@@ -351,6 +351,14 @@ a0509, **a0912**, e0509, h2017, h2515, m0609, m0617, m1013, m1509
 - [x] Twist 적분 기반 합성 오도메트리 구현 (`woosh_sensor_bridge.py`)
   - Woosh SDK가 바퀴 엔코더를 미제공 → `PoseSpeed.twist`(linear, angular)를 dt 적분하는 차동 구동 모델로 대체
   - 포즈 공분산(x: 0.05, y: 0.05, yaw: 0.1) 및 속도 공분산(vx: 0.001, ω: 0.005) 기본값 설정
+- [x] `PoseSpeed.pose` 필드 확인 (로봇 내부 SLAM 기반 위치 추정값)
+  - `Pose2D { x, y, theta }` — 로봇이 LiDAR + 내부 지도로 스스로 추정한 절대 위치
+  - `map_id != 0` 일 때만 유효 (지도 로드 상태 필수)
+  - `woosh_rviz_debug.py` 에서 시각화에 활용 중 / `woosh_sensor_bridge.py` 에서는 미활용 (개선 여지)
+  - 상세 분석 및 예제: [`src/TR-200/woosh_robot_py/docs/pose_speed_pose_guide.md`](src/TR-200/woosh_robot_py/docs/pose_speed_pose_guide.md)
+- [x] `PoseSpeed.mileage` 필드 확인 (누적 주행 거리)
+  - `int` 타입, 로봇 생산 이후 전체 누적 주행 거리 (단위: mm 추정)
+  - 오도메트리 소스로는 부적합 — 유지보수 주기 계산·테스트 로그 기록 용도
 - [ ] Wheel odometry 정확도 점검
   - 실측 이동 거리/각도 vs `/odom` 누적값 비교 (기준 거리 마킹 후 반복 측정)
 - [ ] 직진/회전 시 odom 누적 오차 측정
@@ -359,6 +367,9 @@ a0509, **a0912**, e0509, h2017, h2515, m0609, m0617, m1013, m1509
   - Woosh SDK IMU 미제공 — 외부 IMU 모듈 추가 장착 시 재검토 필요
 - [ ] `/odom` 기반 RViz 이동 궤적 검증
   - RViz `Odometry` 디스플레이 또는 `Path` 플러그인으로 실제 이동 궤적과 비교
+- [ ] `PoseSpeed.pose` 직접 활용 검토 (`woosh_sensor_bridge.py` 개선)
+  - twist 적분 대신 `pose.x / pose.y / pose.theta` 를 `/odom` 소스로 사용 시 오차 누적 없음
+  - 전제 조건: `map_id != 0` (SLAM 지도 로드 상태) 보장 필요
 - [ ] 공분산 파라미터 튜닝
   - 실측 오차를 반영하여 `woosh_sensor_bridge.py` 내 포즈·속도 공분산 값 보정
 
