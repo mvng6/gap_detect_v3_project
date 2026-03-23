@@ -56,6 +56,12 @@ rosrun woosh_bringup woosh_service_driver.py rviz_on
 rosrun woosh_bringup woosh_service_driver.py slam
 ```
 
+지도 생성(Cartographer SLAM)과 함께 실행하려면:
+
+```bash
+rosrun woosh_bringup woosh_service_driver.py carto
+```
+
 > 생성한 지도 저장 방법은 아래 `실행 방법 > 지도 생성 및 지도 파일 준비` 섹션을 참조하세요.
 
 로컬라이제이션(AMCL, 위치 추정)과 함께 실행하려면:
@@ -136,7 +142,8 @@ src/
     └── woosh_slam/            # SLAM 패키지 모음 (지도 생성)
         ├── GMapping/          # GMapping 기반 SLAM
         │   └── woosh_slam_gmapping/  # ROS 패키지
-        └── Cartographer/      # Cartographer 기반 SLAM (예정)
+        └── Cartographer/      # Cartographer 기반 SLAM
+            └── woosh_slam_cartographer/  # ROS 패키지
 ```
 
 ---
@@ -191,7 +198,7 @@ roslaunch woosh_bringup woosh_rviz_debug.launch robot_ip:=169.254.128.2
 ### 지도 생성 및 지도 파일 준비
 
 로컬라이제이션 전에 먼저 사용할 맵 파일(`.pgm` + `.yaml`)을 준비합니다.
-아래 두 가지 방법 중 하나를 선택하면 됩니다.
+아래 세 가지 방법 중 하나를 선택하면 됩니다.
 
 #### 1. GMapping으로 새 지도 생성
 
@@ -210,7 +217,23 @@ roslaunch woosh_slam_gmapping save_map.launch map_name:=woosh_map
 # 저장 위치: /root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.{pgm,yaml}
 ```
 
-#### 2. 로봇에 저장된 기존 맵 내보내기
+#### 2. Cartographer로 새 지도 생성
+
+```bash
+# 1단계-A: Cartographer 스택 단독 실행 (RViz 포함)
+roslaunch woosh_slam_cartographer cartographer.launch robot_ip:=169.254.128.2
+
+# 1단계-B: woosh_service_driver 와 통합 실행 (권장)
+rosrun woosh_bringup woosh_service_driver.py carto
+
+# 2단계: 로봇을 탐색 영역 전체에 걸쳐 이동시킵니다.
+
+# 3단계: 지도 저장 (별도 터미널, Cartographer 실행 중인 상태)
+roslaunch woosh_slam_cartographer save_map.launch map_name:=woosh_map
+# 저장 위치: /root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.{pgm,yaml}
+```
+
+#### 3. 로봇에 저장된 기존 맵 내보내기
 
 ```bash
 rosrun woosh_slam_amcl export_map.py \
@@ -306,7 +329,8 @@ a0509, **a0912**, e0509, h2017, h2515, m0609, m0617, m1013, m1509
 - [x] 두 로봇 통합 제어 기초 프레임
 - [x] GMapping SLAM (온라인 지도 생성)
 - [x] AMCL 로컬리제이션 (맵 기반 위치 추정)
-- [ ] Cartographer SLAM (온라인 지도 생성)
+- [x] Cartographer SLAM (온라인 지도 생성)
+- [ ] Local & Global Costmap 구성 (장애물 레이어, 인플레이션 레이어)
 - [ ] 자율 내비게이션 (경로 계획 — move_base)
 - [ ] 갭 감지 알고리즘 개발
 - [ ] 협동 작업 시나리오 구현
