@@ -15,6 +15,9 @@ ROS1 Noetic robotics project integrating a **Doosan collaborative arm robot** wi
 All development and execution happens inside the Docker container.
 
 ```bash
+# Allow X11 access for GUI (RViz/Gazebo)
+xhost +local:docker
+
 # Start container
 docker-compose -f docker-compose.noetic_integration.yml up -d
 
@@ -77,7 +80,7 @@ cd src/doosan-robot/common/bin/DRCF && ./run_drcf.sh
 
 ## SLAM (Map Building)
 
-Three SLAM approaches are available for building maps with the Woosh TR-200:
+Two SLAM approaches are available for building maps with the Woosh TR-200:
 
 ```bash
 # GMapping SLAM
@@ -91,18 +94,34 @@ roslaunch woosh_slam_gmapping save_map.launch map_name:=my_map
 roslaunch woosh_slam_cartographer save_map.launch map_name:=my_map
 ```
 
+Maps are saved to `src/TR-200/woosh_slam/maps/` (container path: `/root/catkin_ws/src/TR-200/woosh_slam/maps/`).
+
 ## Localization (AMCL — requires an existing map)
 
 ```bash
 roslaunch woosh_slam_amcl amcl.launch \
   robot_ip:=169.254.128.2 \
-  map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml
+  map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
 
 # Generate map file from robot (if none exists yet)
 rosrun woosh_slam_amcl export_map.py _robot_ip:=169.254.128.2
 ```
 
-Map files (`.pgm` + `.yaml`) are stored in `src/TR-200/woosh_navigation/maps/` and accessible inside the container at `/root/catkin_ws/src/TR-200/woosh_navigation/maps/`.
+Map files (`.pgm` + `.yaml`) are stored in `src/TR-200/woosh_slam/maps/` and accessible inside the container at `/root/catkin_ws/src/TR-200/woosh_slam/maps/`.
+
+## Cartographer Localization (alternative to AMCL)
+
+Cartographer can also be used for localization against a previously-built `.pbstream` map:
+
+```bash
+# Fixed map (no submap updates, similar to AMCL)
+rosrun woosh_bringup woosh_service_driver.py carto_loc_fix
+
+# Non-fixed (submap updates enabled)
+rosrun woosh_bringup woosh_service_driver.py carto_loc_nonfix
+```
+
+Requires a `.pbstream` file in `src/TR-200/woosh_slam/maps/`.
 
 ## Architecture
 
@@ -130,8 +149,7 @@ src/
     │   ├── GMapping/woosh_slam_gmapping/
     │   └── Cartographer/woosh_slam_cartographer/
     ├── woosh_navigation/
-    │   ├── AMCL/                   # AMCL localization (woosh_slam_amcl)
-    │   └── maps/                   # Map files (.pgm + .yaml)
+    │   └── AMCL/                   # AMCL localization (woosh_slam_amcl)
     └── woosh_control/              # Placeholder
 ```
 
@@ -160,13 +178,17 @@ SLAM node (gmapping / cartographer / amcl)  →  TF(map→odom)
 
 ### woosh_service_driver.py Modes
 
-The driver is launched by the SLAM launch files and accepts an optional mode argument:
+The driver accepts CLI flags to launch additional stacks alongside the `/mobile_move` service:
 
-| Mode | Command | Usage |
+| Flag | Command | Usage |
 |------|---------|-------|
-| default | `rosrun woosh_bringup woosh_service_driver.py` | Normal `/mobile_move` service only |
-| `slam` | `rosrun woosh_bringup woosh_service_driver.py slam` | Integrated with GMapping |
-| `carto` | `rosrun woosh_bringup woosh_service_driver.py carto` | Integrated with Cartographer |
+| *(none)* | `rosrun woosh_bringup woosh_service_driver.py` | `/mobile_move` service only |
+| `rviz_on` | `rosrun woosh_bringup woosh_service_driver.py rviz_on` | + RViz visualization |
+| `gmap` | `rosrun woosh_bringup woosh_service_driver.py gmap` | + GMapping SLAM |
+| `carto_map` | `rosrun woosh_bringup woosh_service_driver.py carto_map` | + Cartographer SLAM (mapping) |
+| `carto_loc_fix` | `rosrun woosh_bringup woosh_service_driver.py carto_loc_fix` | + Cartographer localization (fixed map, AMCL-like) |
+| `carto_loc_nonfix` | `rosrun woosh_bringup woosh_service_driver.py carto_loc_nonfix` | + Cartographer localization (submap updates) |
+| `amcl` | `rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/path/to/map.yaml` | + AMCL localization (requires map file) |
 
 ### Key Source Files
 
@@ -212,7 +234,6 @@ The project primarily uses **a0912**.
 ```
 protobuf==4.21.0
 websockets==12.0
-asyncio>=3.4.3
 typing-extensions>=4.0.0
 python-dateutil>=2.8.2
 ```

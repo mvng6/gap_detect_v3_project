@@ -53,13 +53,25 @@ rosrun woosh_bringup woosh_service_driver.py rviz_on
 지도 생성(GMapping SLAM)과 함께 실행하려면:
 
 ```bash
-rosrun woosh_bringup woosh_service_driver.py slam
+rosrun woosh_bringup woosh_service_driver.py gmap
 ```
 
 지도 생성(Cartographer SLAM)과 함께 실행하려면:
 
 ```bash
-rosrun woosh_bringup woosh_service_driver.py carto
+rosrun woosh_bringup woosh_service_driver.py carto_map
+```
+
+Cartographer 로컬라이제이션(고정 맵)과 함께 실행하려면:
+
+```bash
+rosrun woosh_bringup woosh_service_driver.py carto_loc_fix
+```
+
+Cartographer 로컬라이제이션(서브맵 업데이트 포함)과 함께 실행하려면:
+
+```bash
+rosrun woosh_bringup woosh_service_driver.py carto_loc_nonfix
 ```
 
 > 생성한 지도 저장 방법은 아래 `실행 방법 > 지도 생성 및 지도 파일 준비` 섹션을 참조하세요.
@@ -209,7 +221,7 @@ roslaunch woosh_bringup woosh_rviz_debug.launch robot_ip:=169.254.128.2
 roslaunch woosh_slam_gmapping gmapping.launch robot_ip:=169.254.128.2
 
 # 1단계-B: woosh_service_driver 와 통합 실행 (권장)
-rosrun woosh_bringup woosh_service_driver.py slam
+rosrun woosh_bringup woosh_service_driver.py gmap
 
 # 2단계: 로봇을 탐색 영역 전체에 걸쳐 이동시킵니다.
 # /map 발행 확인: rostopic hz /map
@@ -226,7 +238,7 @@ roslaunch woosh_slam_gmapping save_map.launch map_name:=woosh_map
 roslaunch woosh_slam_cartographer cartographer.launch robot_ip:=169.254.128.2
 
 # 1단계-B: woosh_service_driver 와 통합 실행 (권장)
-rosrun woosh_bringup woosh_service_driver.py carto
+rosrun woosh_bringup woosh_service_driver.py carto_map
 
 # 2단계: 로봇을 탐색 영역 전체에 걸쳐 이동시킵니다.
 
@@ -396,6 +408,8 @@ a0509, **a0912**, e0509, h2017, h2515, m0609, m0617, m1013, m1509
 
 ### 6. 로컬라이제이션
 - [x] AMCL 로컬리제이션 (맵 기반 위치 추정)
+- [x] Cartographer 로컬리제이션 — fix 모드 (고정 맵, AMCL 유사)
+- [x] Cartographer 로컬리제이션 — nonfix 모드 (서브맵 업데이트 포함)
 - [ ] 초기 자세 설정 절차 정리 (`2D Pose Estimate`)
 - [ ] AMCL 파라미터 튜닝
 - [ ] AMCL 위치 오차 반복 측정
