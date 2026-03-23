@@ -76,16 +76,22 @@ rosrun woosh_bringup woosh_service_driver.py carto_loc_nonfix
 
 > 생성한 지도 저장 방법은 아래 `실행 방법 > 지도 생성 및 지도 파일 준비` 섹션을 참조하세요.
 
-Global Costmap과 함께 실행하려면:
+내비게이션(Global Costmap)까지 함께 활성화하려면:
 
 ```bash
-rosrun woosh_bringup woosh_service_driver.py costmap map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
+rosrun woosh_bringup woosh_service_driver.py amcl nav_on map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
 ```
 
-AMCL + Global Costmap을 함께 실행하려면 (map_server 중복 방지):
+Cartographer 고정 맵 localization + nav_on:
 
 ```bash
-rosrun woosh_bringup woosh_service_driver.py amcl costmap map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
+rosrun woosh_bringup woosh_service_driver.py carto_loc_fix nav_on state_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.pbstream
+```
+
+Cartographer 서브맵 업데이트 localization + nav_on:
+
+```bash
+rosrun woosh_bringup woosh_service_driver.py carto_loc_nonfix nav_on state_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.pbstream
 ```
 
 로컬라이제이션(AMCL, 위치 추정)과 함께 실행하려면:
@@ -433,7 +439,7 @@ a0509, **a0912**, e0509, h2017, h2515, m0609, m0617, m1013, m1509
   - [x] Obstacle Layer 구성 (LiDAR `/scan` 기반 동적 장애물)
   - [x] Inflation Layer 구성 (inflation_radius: 0.55m, cost_scaling_factor: 3.0)
   - [x] `woosh_costmap` 패키지 생성 (`src/TR-200/woosh_navigation/Costmap/woosh_costmap/`)
-  - [x] `woosh_service_driver.py` — `costmap` CLI 플래그 추가
+  - [x] `woosh_service_driver.py` — `nav_on` CLI 플래그 추가
   - [ ] 장애물 반영 / 제거 동작 확인 (실기 테스트 필요)
   - [ ] 동적 장애물 대응 여부 점검
   - [ ] inflation_radius / cost_scaling_factor 파라미터 튜닝

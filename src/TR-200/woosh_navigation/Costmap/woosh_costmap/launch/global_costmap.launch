@@ -15,7 +15,7 @@
            launch_sensor_bridge:=false
 
        woosh_service_driver와 통합 실행 (권장):
-         rosrun woosh_bringup woosh_service_driver.py costmap \
+         rosrun woosh_bringup woosh_service_driver.py amcl nav_on \
            map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
        ============================================================ -->
 
@@ -47,6 +47,9 @@
   <!-- map→odom 정적 TF 발행 여부 (localization 없이 costmap만 실행할 때 true) -->
   <arg name="launch_map_odom_tf"   default="false" />
 
+  <!-- base_link→laser 정적 TF 발행 여부 (localization 스택이 이미 발행 중이면 false) -->
+  <arg name="launch_base_laser_tf" default="true" />
+
   <!-- 센서 브릿지 기동 여부 (woosh_service_driver와 함께 실행 시 false) -->
   <arg name="launch_sensor_bridge" default="true" />
 
@@ -57,7 +60,8 @@
   <!-- ============================================================
        1. 정적 TF: base_link → laser
        ============================================================ -->
-  <node pkg="tf2_ros" type="static_transform_publisher" name="base_link_to_laser"
+  <node if="$(arg launch_base_laser_tf)"
+        pkg="tf2_ros" type="static_transform_publisher" name="base_link_to_laser"
         args="$(arg laser_offset_x) $(arg laser_offset_y) $(arg laser_offset_z)
               $(arg laser_offset_yaw) 0.0 0.0
               $(arg base_frame) $(arg laser_frame)" />
