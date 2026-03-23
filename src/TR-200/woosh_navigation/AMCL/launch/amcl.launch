@@ -5,7 +5,7 @@
        실행 예시:
          roslaunch woosh_slam_amcl amcl.launch \
            robot_ip:=169.254.128.2 \
-           map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml
+           map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
 
        맵 파일이 없을 경우 먼저 export_map.py로 생성하세요:
          rosrun woosh_slam_amcl export_map.py _robot_ip:=169.254.128.2
@@ -16,7 +16,7 @@
   <arg name="robot_port"        default="5480" />
 
   <!-- 맵 파일 경로 (.yaml) -->
-  <arg name="map_file"          default="/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml" />
+  <arg name="map_file"          default="/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml" />
 
   <!-- TF 프레임 이름 -->
   <arg name="map_frame"         default="map" />
@@ -33,6 +33,9 @@
 
   <!-- 센서 브릿지 발행 주기 (Hz) -->
   <arg name="publish_hz"        default="10.0" />
+
+  <!-- 센서 브릿지 기동 여부 (woosh_service_driver와 함께 실행 시 false로 설정) -->
+  <arg name="launch_sensor_bridge" default="true" />
 
   <!-- RViz 실행 여부 -->
   <arg name="launch_rviz"       default="true" />
@@ -57,8 +60,11 @@
 
   <!-- ============================================================
        3. woosh_sensor_bridge — SDK → /scan + /odom + TF
+          woosh_service_driver와 함께 실행 시 launch_sensor_bridge:=false로
+          중복 기동을 방지합니다 (service_driver가 이미 기동).
        ============================================================ -->
-  <node pkg="woosh_slam_amcl" type="woosh_sensor_bridge.py"
+  <node if="$(arg launch_sensor_bridge)"
+        pkg="woosh_sensor_bridge" type="woosh_sensor_bridge.py"
         name="woosh_sensor_bridge"
         output="screen">
     <param name="robot_ip"       value="$(arg robot_ip)" />

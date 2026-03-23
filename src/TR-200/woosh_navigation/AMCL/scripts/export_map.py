@@ -10,7 +10,7 @@ Woosh 로봇 SDK에서 현재 로드된 맵을 가져와 ROS map_server 포맷(.
 Example:
   rosrun woosh_slam_amcl export_map.py \\
     _robot_ip:=169.254.128.2 \\
-    _output_dir:=/root/catkin_ws/src/TR-200/woosh_navigation/maps \\
+    _output_dir:=/root/catkin_ws/src/TR-200/woosh_slam/maps \\
     _map_name:=my_map
 """
 
@@ -186,7 +186,7 @@ def main():
 
     robot_ip = rospy.get_param("~robot_ip", "169.254.128.2")
     robot_port = rospy.get_param("~robot_port", 5480)
-    output_dir = rospy.get_param("~output_dir", "/root/catkin_ws/src/TR-200/woosh_navigation/maps")
+    output_dir = rospy.get_param("~output_dir", "/root/catkin_ws/src/TR-200/woosh_slam/maps")
     map_name = rospy.get_param("~map_name", "woosh_map")
     scene_name_override = rospy.get_param("~scene_name", "")
     map_name_override = rospy.get_param("~map_name_filter", "")

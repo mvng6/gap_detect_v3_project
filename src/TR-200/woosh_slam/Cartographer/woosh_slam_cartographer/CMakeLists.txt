@@ -1,29 +1,32 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(woosh_slam_amcl)
+project(woosh_slam_cartographer)
 
 find_package(catkin REQUIRED COMPONENTS
-  amcl
   geometry_msgs
-  map_server
   nav_msgs
   rospy
   sensor_msgs
-  std_msgs
   tf2
   tf2_ros
-  woosh_robot_py
 )
 
 catkin_package(
-  CATKIN_DEPENDS amcl geometry_msgs map_server nav_msgs rospy sensor_msgs
-                 std_msgs tf2 tf2_ros woosh_robot_py
+  CATKIN_DEPENDS
+    geometry_msgs
+    nav_msgs
+    rospy
+    sensor_msgs
+    tf2
+    tf2_ros
 )
 
+# 스크립트 설치
 catkin_install_python(PROGRAMS
-  scripts/export_map.py
+  scripts/save_cartographer_state.sh
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
+# launch, config, rviz 디렉터리 설치
 install(
   DIRECTORY launch config rviz
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}

@@ -5,7 +5,7 @@
 Woosh TR-200 센서 브릿지 노드
 
 Woosh SDK에서 레이저 스캔과 속도 데이터를 받아 ROS 표준 토픽으로 변환·발행합니다.
-AMCL 로컬리제이션에 필요한 /scan, /odom, TF(odom→base_link)를 제공합니다.
+모든 모드(standalone, GMapping, Cartographer, AMCL)에서 /scan, /odom, TF(odom→base_link)를 제공합니다.
 
 발행 토픽:
   /scan          (sensor_msgs/LaserScan)   — 레이저 스캔
@@ -18,7 +18,7 @@ TF 트리 (이 노드 기준):
   map → odom         (amcl 노드가 발행)
 
 Example:
-  rosrun woosh_slam_amcl woosh_sensor_bridge.py \\
+  rosrun woosh_sensor_bridge woosh_sensor_bridge.py \\
     _robot_ip:=169.254.128.2 _robot_port:=5480
 """
 
@@ -35,7 +35,7 @@ from sensor_msgs.msg import LaserScan
 import tf2_ros
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-WOOSH_ROBOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../../woosh_robot_py"))
+WOOSH_ROBOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../woosh_robot_py"))
 if WOOSH_ROBOT_DIR not in sys.path:
     sys.path.insert(0, WOOSH_ROBOT_DIR)
 
@@ -158,11 +158,21 @@ class WooshSensorBridgeNode:
         if not ok:
             raise RuntimeError(f"로봇 정보 조회 실패: {msg}")
 
-        rospy.loginfo(
-            "센서 브릿지 연결 성공 (scene=%s, map=%s)",
-            info.scene.scene_name,
-            info.scene.map_name,
-        )
+        # woosh_service_driver가 선택한 맵이 있으면 우선 표시
+        # (로컬 맵 선택 시 로봇 하드웨어 scene과 다를 수 있음)
+        selected_map = rospy.get_param("/woosh/selected_map_name", "")
+        selected_map_source = rospy.get_param("/woosh/selected_map_source", "")
+        if selected_map and selected_map != info.scene.scene_name:
+            rospy.loginfo(
+                "센서 브릿지 연결 성공 (활성 맵: %s [%s] / robot scene: %s)",
+                selected_map, selected_map_source, info.scene.scene_name,
+            )
+        else:
+            rospy.loginfo(
+                "센서 브릿지 연결 성공 (scene=%s, map=%s)",
+                info.scene.scene_name,
+                info.scene.map_name,
+            )
 
         # 초기 포즈·스캔 데이터로 상태 초기화
         if info.pose_speed:

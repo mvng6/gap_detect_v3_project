@@ -1,10 +1,11 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>woosh_slam_gmapping</name>
+  <name>woosh_slam_cartographer</name>
   <version>0.1.0</version>
-  <description>GMapping SLAM package for Woosh TR-200 mobile robot.
+  <description>Cartographer SLAM package for Woosh TR-200 mobile robot.
     Builds an occupancy grid map online using laser scan and odometry data
     provided by woosh_sensor_bridge package.
+    Sensor bridge, TF, and topic structure are identical to woosh_slam_gmapping.
   </description>
 
   <maintainer email="djlee2@katech.re.kr">LDJ</maintainer>
@@ -16,11 +17,11 @@
   <depend>nav_msgs</depend>
   <depend>rospy</depend>
   <depend>sensor_msgs</depend>
-  <!-- slam_gmapping은 launch 파일에서만 사용 (런타임 전용, CMake 빌드 의존성 없음) -->
-  <exec_depend>slam_gmapping</exec_depend>
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
 
+  <!-- cartographer_ros는 launch 파일에서만 사용 (런타임 전용) -->
+  <exec_depend>cartographer_ros</exec_depend>
   <!-- map_saver는 save_map.launch에서만 사용 (런타임 전용) -->
   <exec_depend>map_server</exec_depend>
   <!-- woosh_sensor_bridge.py를 launch에서 기동 (런타임 전용) -->

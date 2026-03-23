@@ -61,8 +61,8 @@ woosh_navigation/AMCL/                     ← ROS 패키지: woosh_slam_amcl
 ├── package.xml
 ├── CMakeLists.txt
 ├── scripts/
-│   ├── woosh_sensor_bridge.py       # SDK → /scan + /odom + TF 브릿지
 │   └── export_map.py                # Woosh 맵 → .pgm/.yaml 변환 유틸리티
+│   # woosh_sensor_bridge.py는 woosh_sensor_bridge 패키지로 이동
 ├── launch/
 │   └── amcl.launch                  # 전체 AMCL 스택 런치 파일
 ├── config/
@@ -174,18 +174,18 @@ source devel/setup.bash
 ```bash
 rosrun woosh_slam_amcl export_map.py \
   _robot_ip:=169.254.128.2 \
-  _output_dir:=/root/catkin_ws/src/TR-200/woosh_navigation/maps \
+  _output_dir:=/root/catkin_ws/src/TR-200/woosh_slam/maps \
   _map_name:=woosh_map
 ```
 
-성공 시 `/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.pgm` 과 `woosh_map.yaml`이 생성됩니다.
+성공 시 `/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.pgm` 과 `woosh_map.yaml`이 생성됩니다.
 
 추가 옵션:
 
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
 | `_robot_ip` | `169.254.128.2` | 로봇 IP |
-| `_output_dir` | `/root/catkin_ws/src/TR-200/woosh_navigation/maps` | 저장 경로 |
+| `_output_dir` | `/root/catkin_ws/src/TR-200/woosh_slam/maps` | 저장 경로 |
 | `_map_name` | `woosh_map` | 파일 이름 (확장자 제외) |
 | `_scene_name` | (로봇의 현재 scene) | 특정 scene 지정 |
 | `_map_name_filter` | (첫 번째 맵) | scene 내 특정 맵 이름 지정 |
@@ -195,7 +195,7 @@ rosrun woosh_slam_amcl export_map.py \
 ```bash
 roslaunch woosh_slam_amcl amcl.launch \
   robot_ip:=169.254.128.2 \
-  map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml
+  map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
 ```
 
 RViz 없이 실행하려면:
@@ -203,7 +203,7 @@ RViz 없이 실행하려면:
 ```bash
 roslaunch woosh_slam_amcl amcl.launch \
   robot_ip:=169.254.128.2 \
-  map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml \
+  map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml \
   launch_rviz:=false
 ```
 
@@ -240,7 +240,7 @@ rosrun tf tf_echo map base_link
 |------|--------|------|
 | `robot_ip` | `169.254.128.2` | Woosh 로봇 IP |
 | `robot_port` | `5480` | Woosh 로봇 포트 |
-| `map_file` | `/root/catkin_ws/src/TR-200/woosh_navigation/maps/woosh_map.yaml` | 맵 파일 경로 |
+| `map_file` | `/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml` | 맵 파일 경로 |
 | `map_frame` | `map` | 맵 프레임 이름 |
 | `odom_frame` | `odom` | 오도메트리 프레임 이름 |
 | `base_frame` | `base_link` | 로봇 베이스 프레임 이름 |
@@ -307,7 +307,7 @@ rosrun tf tf_echo map base_link
 rosrun woosh_bringup woosh_service_driver.py amcl
 
 # 맵 파일 경로 지정
-rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/my_map.yaml
+rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/my_map.yaml
 ```
 
 `amcl` 플래그를 사용하면 자동으로 `rviz_on`이 활성화되며, RViz는 `amcl_debug.rviz` 설정으로 실행됩니다.

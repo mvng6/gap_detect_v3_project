@@ -40,7 +40,7 @@ AMCL과 동일한 TF 트리 구조이므로, GMapping으로 생성한 맵을 AMC
 - 변환: `base_link → laser` (z=0.25m 오프셋)
 - AMCL `amcl.launch`와 동일한 오프셋
 
-### 2. `woosh_sensor_bridge` (woosh_slam_amcl 패키지 스크립트 재사용)
+### 2. `woosh_sensor_bridge` (woosh_sensor_bridge 패키지)
 - 역할: Woosh SDK WebSocket → ROS 토픽 변환
 - 발행:
   - `/scan` (`sensor_msgs/LaserScan`) — 레이저 스캔 데이터
@@ -113,7 +113,7 @@ roslaunch woosh_slam_gmapping save_map.launch
 roslaunch woosh_slam_gmapping save_map.launch map_name:=new_map
 
 # 저장 경로 확인
-ls -la /root/catkin_ws/src/TR-200/woosh_navigation/maps/
+ls -la /root/catkin_ws/src/TR-200/woosh_slam/maps/
 ```
 
 저장 결과:
@@ -124,7 +124,7 @@ ls -la /root/catkin_ws/src/TR-200/woosh_navigation/maps/
 
 ```bash
 rosrun woosh_bringup woosh_service_driver.py amcl \
-  map_file:=/root/catkin_ws/src/TR-200/woosh_navigation/maps/new_map.yaml
+  map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/new_map.yaml
 ```
 
 ---
@@ -233,11 +233,12 @@ rosnode info /slam_gmapping
 
 ### `woosh_sensor_bridge.py` 공유 재사용
 GMapping과 AMCL은 동일한 센서 입력(`/scan`, `/odom`, TF)을 필요로 합니다.
-`woosh_sensor_bridge.py`를 복사하지 않고 `pkg="woosh_slam_amcl"` 참조를 통해
-단일 소스를 유지합니다. 향후 브릿지 코드 수정 시 AMCL과 GMapping 모두에 자동 반영됩니다.
+`woosh_sensor_bridge.py`는 독립 패키지 `woosh_sensor_bridge`에서 관리되며,
+모든 모드(standalone, GMapping, Cartographer, AMCL)에서 `pkg="woosh_sensor_bridge"` 참조를 통해
+단일 소스를 유지합니다. 향후 브릿지 코드 수정 시 모든 모드에 자동 반영됩니다.
 
 ### 지도 저장 경로 통합
-`save_map.launch`의 기본 저장 경로를 `woosh_navigation/maps/`로 지정하여
+`save_map.launch`의 기본 저장 경로를 `woosh_slam/maps/`로 지정하여
 GMapping으로 생성한 맵을 파일 이동 없이 즉시 AMCL에서 사용할 수 있습니다.
 
 ### `robot_identity: gmapping_bridge`

@@ -62,12 +62,15 @@ RUN python3 -m pip install --no-cache-dir \
     "python-dateutil>=2.8.2" \
     "typing-extensions>=4.0.0"
 
+COPY cartographer.repos /root/catkin_ws/cartographer.repos
 COPY src /root/catkin_ws/src
 
 RUN mkdir -p /root/catkin_ws/maps && \
     rosdep init 2>/dev/null || true && \
     rosdep update && \
     source /opt/ros/noetic/setup.bash && \
+    # Cartographer 소스 클론 (바이너리 패키지 미제공으로 소스 빌드)
+    vcs import src < cartographer.repos && \
     rosdep install --from-paths src --ignore-src --rosdistro noetic -r -y && \
     catkin config --extend /opt/ros/noetic --cmake-args -DCMAKE_BUILD_TYPE=Release && \
     catkin build --no-status --summarize && \
