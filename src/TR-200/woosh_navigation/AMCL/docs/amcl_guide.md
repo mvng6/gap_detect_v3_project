@@ -61,8 +61,8 @@ woosh_navigation/AMCL/                     ← ROS 패키지: woosh_slam_amcl
 ├── package.xml
 ├── CMakeLists.txt
 ├── scripts/
-│   ├── woosh_sensor_bridge.py       # SDK → /scan + /odom + TF 브릿지
 │   └── export_map.py                # Woosh 맵 → .pgm/.yaml 변환 유틸리티
+│   # woosh_sensor_bridge.py는 woosh_sensor_bridge 패키지로 이동
 ├── launch/
 │   └── amcl.launch                  # 전체 AMCL 스택 런치 파일
 ├── config/

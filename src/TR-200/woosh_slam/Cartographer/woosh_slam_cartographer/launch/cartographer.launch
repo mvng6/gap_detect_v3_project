@@ -43,6 +43,9 @@
   <!-- 센서 브릿지 발행 주기 (Hz) -->
   <arg name="publish_hz"        default="10.0" />
 
+  <!-- 센서 브릿지 기동 여부 (woosh_service_driver와 함께 실행 시 false로 설정) -->
+  <arg name="launch_sensor_bridge" default="true" />
+
   <!-- RViz 실행 여부 -->
   <arg name="launch_rviz"       default="true" />
   <arg name="rviz_config"       default="$(find woosh_slam_cartographer)/rviz/cartographer_debug.rviz" />
@@ -58,11 +61,14 @@
 
   <!-- ============================================================
        2. woosh_sensor_bridge — Woosh SDK → /scan + /odom + TF
-          woosh_slam_amcl 패키지의 스크립트를 직접 참조합니다.
+          woosh_sensor_bridge 패키지의 스크립트를 참조합니다.
           robot_identity를 'cartographer_bridge'로 지정하여
           다른 브릿지('amcl_bridge', 'gmapping_bridge')와 SDK 연결 충돌을 방지합니다.
+          woosh_service_driver와 함께 실행 시 launch_sensor_bridge:=false로
+          중복 기동을 방지합니다 (service_driver가 이미 기동).
        ============================================================ -->
-  <node pkg="woosh_slam_amcl" type="woosh_sensor_bridge.py"
+  <node if="$(arg launch_sensor_bridge)"
+        pkg="woosh_sensor_bridge" type="woosh_sensor_bridge.py"
         name="woosh_sensor_bridge"
         output="screen">
     <param name="robot_ip"       value="$(arg robot_ip)" />

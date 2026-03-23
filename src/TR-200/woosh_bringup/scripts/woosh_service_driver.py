@@ -36,7 +36,7 @@ from woosh_msgs.srv import MoveMobile, MoveMobileResponse
 from woosh_robot import WooshRobot
 from woosh_interface import CommuSettings, NO_PRINT, FULL_PRINT
 from woosh.proto.robot.robot_pack_pb2 import Twist, ExecTask
-from woosh.proto.robot.robot_pb2 import (RobotInfo, PoseSpeed, OperationState, TaskProc, ScannerData)
+from woosh.proto.robot.robot_pb2 import (RobotInfo, PoseSpeed, OperationState, TaskProc)
 from woosh.proto.robot.robot_pack_pb2 import SwitchMap, SetRobotPose, InitRobot, SwitchControlMode
 from woosh.proto.map.map_pack_pb2 import SceneList
 from woosh.proto.util.task_pb2 import State as TaskState, Type as TaskType, Direction as TaskDirection
@@ -74,7 +74,7 @@ class SmoothTwistController:
         info, ok, _ = await self.robot.robot_info_req(RobotInfo(), NO_PRINT, NO_PRINT)
         if not ok:
             raise RuntimeError("로봇 연결 실패")
-        
+
         # battery_check.py의 함수를 사용하여 배터리 상태 출력
         print_battery_status(info.battery.power)
         rospy.loginfo("로봇 연결 성공!")
@@ -437,6 +437,7 @@ rviz_process = None
 amcl_process = None
 gmapping_process = None
 cartographer_process = None
+sensor_bridge_process = None
 
 
 def parse_cli_args(argv):
@@ -498,6 +499,56 @@ def find_debug_script_path():
             return candidate
 
     return None
+
+
+def find_sensor_bridge_script_path():
+    candidates = [
+        os.path.abspath(os.path.join(
+            script_dir, "../../woosh_sensor_bridge/scripts/woosh_sensor_bridge.py"
+        )),
+    ]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+
+    try:
+        import rospkg
+        return os.path.join(
+            rospkg.RosPack().get_path("woosh_sensor_bridge"), "scripts", "woosh_sensor_bridge.py"
+        )
+    except Exception:
+        return None
+
+
+def stop_sensor_bridge_support():
+    global sensor_bridge_process
+    terminate_process_tree(sensor_bridge_process, "센서 브릿지")
+    sensor_bridge_process = None
+
+
+def start_sensor_bridge_support(robot_ip, robot_port):
+    """woosh_sensor_bridge.py를 항상 기동 — /scan의 유일한 발행 주체."""
+    global sensor_bridge_process
+
+    bridge_script = find_sensor_bridge_script_path()
+    if bridge_script is None:
+        rospy.logwarn("woosh_sensor_bridge.py를 찾을 수 없습니다. /scan이 발행되지 않습니다.")
+        return
+
+    cmd = [
+        sys.executable,
+        bridge_script,
+        f"_robot_ip:={robot_ip}",
+        f"_robot_port:={robot_port}",
+        "_robot_identity:=service_bridge",
+        "_publish_hz:=10.0",
+    ]
+
+    try:
+        sensor_bridge_process = subprocess.Popen(cmd, start_new_session=True)
+        rospy.loginfo("센서 브릿지 기동 (/scan, /odom, TF — identity: service_bridge)")
+    except Exception as exc:
+        rospy.logwarn("센서 브릿지 기동 실패: %s", exc)
 
 
 def find_rviz_config_path():
@@ -634,7 +685,8 @@ def stop_cartographer_support():
 
 
 def start_gmapping_support(robot_ip, robot_port):
-    """GMapping gmap 스택(sensor_bridge + gmap_gmapping + RViz)을 roslaunch로 시작한다."""
+    """GMapping 스택(slam_gmapping + RViz)을 roslaunch로 시작한다.
+    sensor_bridge는 woosh_service_driver가 이미 기동했으므로 launch_sensor_bridge:=false 전달."""
     global gmapping_process
 
     gmapping_launch = find_gmapping_launch_path()
@@ -647,17 +699,19 @@ def start_gmapping_support(robot_ip, robot_port):
         f"robot_ip:={robot_ip}",
         f"robot_port:={robot_port}",
         "launch_rviz:=true",
+        "launch_sensor_bridge:=false",
     ]
 
     try:
         gmapping_process = subprocess.Popen(cmd, start_new_session=True)
-        rospy.loginfo("GMapping gmap 스택 시작")
+        rospy.loginfo("GMapping 스택 시작")
     except Exception as exc:
         rospy.logwarn("GMapping 스택 시작 실패: %s", exc)
 
 
 def start_cartographer_support(robot_ip, robot_port):
-    """Cartographer 스택(sensor_bridge + cartographer_node + occupancy_grid_node + RViz)을 roslaunch로 시작한다."""
+    """Cartographer 스택(cartographer_node + occupancy_grid_node + RViz)을 roslaunch로 시작한다.
+    sensor_bridge는 woosh_service_driver가 이미 기동했으므로 launch_sensor_bridge:=false 전달."""
     global cartographer_process
 
     cartographer_launch = find_cartographer_launch_path()
@@ -670,6 +724,7 @@ def start_cartographer_support(robot_ip, robot_port):
         f"robot_ip:={robot_ip}",
         f"robot_port:={robot_port}",
         "launch_rviz:=true",
+        "launch_sensor_bridge:=false",
     ]
 
     try:
@@ -727,7 +782,8 @@ def _validate_map_file(map_file):
 
 
 def start_amcl_support(robot_ip, robot_port, map_file):
-    """AMCL 스택(sensor_bridge + map_server + amcl)을 roslaunch로 시작한다."""
+    """AMCL 스택(map_server + amcl)을 roslaunch로 시작한다.
+    sensor_bridge는 woosh_service_driver가 이미 기동했으므로 launch_sensor_bridge:=false 전달."""
     global amcl_process
 
     if not _validate_map_file(map_file):
@@ -749,7 +805,8 @@ def start_amcl_support(robot_ip, robot_port, map_file):
         f"robot_ip:={robot_ip}",
         f"robot_port:={robot_port}",
         f"map_file:={map_file}",
-        "launch_rviz:=false",   # RViz는 rviz_on 경로에서 별도 실행
+        "launch_rviz:=false",           # RViz는 rviz_on 경로에서 별도 실행
+        "launch_sensor_bridge:=false",  # sensor_bridge는 woosh_service_driver가 이미 기동
     ]
 
     if amcl_rviz_config:
@@ -851,6 +908,7 @@ if __name__ == "__main__":
     rospy.on_shutdown(stop_rviz_support)
     rospy.on_shutdown(stop_gmapping_support)
     rospy.on_shutdown(stop_cartographer_support)
+    rospy.on_shutdown(stop_sensor_bridge_support)
     atexit.register(stop_rviz_support)
 
     thread = Thread(target=run_asyncio, daemon=True)
@@ -858,25 +916,24 @@ if __name__ == "__main__":
 
     rospy.Service('mobile_move', MoveMobile, service_handler)
 
+    # sensor_bridge를 항상 기동 — /scan의 유일한 발행 주체
+    robot_ip = rospy.get_param("~robot_ip", "169.254.128.2")
+    robot_port = rospy.get_param("~robot_port", 5480)
+    start_sensor_bridge_support(robot_ip, robot_port)
+
     if enable_rviz:
         start_rviz_support(use_amcl_rviz=enable_amcl)
 
     if enable_amcl:
-        robot_ip = rospy.get_param("~robot_ip", "169.254.128.2")
-        robot_port = rospy.get_param("~robot_port", 5480)
         resolved_map = map_file or rospy.get_param(
             "~map_file", "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml"
         )
         start_amcl_support(robot_ip, robot_port, resolved_map)
 
     if enable_gmap:
-        robot_ip = rospy.get_param("~robot_ip", "169.254.128.2")
-        robot_port = rospy.get_param("~robot_port", 5480)
         start_gmapping_support(robot_ip, robot_port)
 
     if enable_carto:
-        robot_ip = rospy.get_param("~robot_ip", "169.254.128.2")
-        robot_port = rospy.get_param("~robot_port", 5480)
         start_cartographer_support(robot_ip, robot_port)
 
     rospy.loginfo("서버 시작됨! (정/역방향 정밀 제어 - 작은 이동 최적화)")

@@ -122,6 +122,7 @@ src/
 │   └── moveit_config_*/            # MoveIt configs (one per robot model)
 └── TR-200/                         # Woosh mobile robot packages (Python)
     ├── woosh_robot_py/             # WebSocket SDK wrapper
+    ├── woosh_sensor_bridge/        # SDK sensor bridge (/scan, /odom, TF)
     ├── woosh_bringup/              # ROS nodes + launch files
     ├── woosh_msgs/                 # Custom service definitions
     ├── woosh_utils/                # Utility scripts (battery, etc.)
@@ -175,7 +176,7 @@ The driver is launched by the SLAM launch files and accepts an optional mode arg
 | `src/TR-200/woosh_bringup/scripts/woosh_service_driver.py` | ROS service adapter for Woosh (implements `/mobile_move` via `SmoothTwistController`) |
 | `src/TR-200/woosh_bringup/scripts/woosh_rviz_debug.py` | RViz visualization node for Woosh |
 | `src/TR-200/woosh_robot_py/woosh_robot.py` | Async WebSocket SDK for Woosh robot |
-| `src/TR-200/woosh_navigation/AMCL/scripts/woosh_sensor_bridge.py` | Converts Woosh WebSocket sensor data to ROS `/scan`, `/odom`, and TF |
+| `src/TR-200/woosh_sensor_bridge/scripts/woosh_sensor_bridge.py` | Converts Woosh WebSocket sensor data to ROS `/scan`, `/odom`, and TF |
 | `src/doosan-robot/dsr_control/src/dsr_hw_interface.cpp` | Doosan hardware abstraction layer |
 
 ### Custom ROS Services

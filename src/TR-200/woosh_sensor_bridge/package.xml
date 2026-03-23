@@ -1,17 +1,19 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>woosh_slam_amcl</name>
+  <name>woosh_sensor_bridge</name>
   <version>0.1.0</version>
-  <description>AMCL localization package for Woosh TR-200 mobile robot.</description>
+  <description>Woosh TR-200 SDK sensor bridge package.
+    Converts Woosh WebSocket SDK data (LiDAR, odometry) into standard ROS topics.
+    Publishes /scan (LaserScan), /odom (Odometry), and TF(odom→base_link).
+    Used by all modes: standalone, GMapping, Cartographer, AMCL.
+  </description>
 
   <maintainer email="djlee2@katech.re.kr">LDJ</maintainer>
   <license>Proprietary</license>
 
   <buildtool_depend>catkin</buildtool_depend>
 
-  <depend>amcl</depend>
   <depend>geometry_msgs</depend>
-  <depend>map_server</depend>
   <depend>nav_msgs</depend>
   <depend>rospy</depend>
   <depend>sensor_msgs</depend>
@@ -19,13 +21,6 @@
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>woosh_robot_py</depend>
-
-  <!-- woosh_sensor_bridge.py를 launch에서 기동 (런타임 전용) -->
-  <exec_depend>woosh_sensor_bridge</exec_depend>
-
-  <exec_depend>python3-numpy</exec_depend>
-  <exec_depend>python3-pil</exec_depend>
-  <exec_depend>rviz</exec_depend>
 
   <export/>
 </package>

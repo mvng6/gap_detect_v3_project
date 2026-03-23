@@ -125,6 +125,8 @@ src/
 │   └── moveit_config_*/       # MoveIt 설정 (로봇 모델별)
 └── TR-200/                    # Woosh 모바일로봇 패키지
     ├── woosh_robot_py/        # WebSocket SDK 래퍼
+    ├── woosh_sensor_bridge/   # SDK 센서 브릿지 (/scan, /odom, TF)
+    │   └── scripts/           # woosh_sensor_bridge.py
     ├── woosh_bringup/         # ROS 노드 + 런치 파일
     │   ├── scripts/           # woosh_service_driver.py, woosh_rviz_debug.py
     │   ├── launch/            # woosh_rviz_debug.launch
@@ -133,7 +135,7 @@ src/
     ├── woosh_utils/           # 유틸리티 (배터리 상태 출력)
     ├── woosh_navigation/      # 네비게이션 패키지 모음
     │   ├── AMCL/              # woosh_slam_amcl — 맵 기반 위치 추정
-    │   │   ├── scripts/       # woosh_sensor_bridge.py, export_map.py
+    │   │   ├── scripts/       # export_map.py
     │   │   ├── launch/        # amcl.launch
     │   │   ├── config/        # amcl_params.yaml
     │   │   ├── rviz/          # amcl_debug.rviz
@@ -331,9 +333,14 @@ a0509, **a0912**, e0509, h2017, h2515, m0609, m0617, m1013, m1509
 
 ### 2. 모바일로봇 기본 주행 기반
 - [x] 모바일 로봇 센서 토픽 정리 (`/scan`, `/odom`, `/tf` 등)
-  - `/scan` (LaserScan), `/odom` (Odometry), TF(`odom → base_link`) 모두 `woosh_sensor_bridge.py`에서 발행
-- [ ] LiDAR / IMU / 바퀴 엔코더 입력 상태 점검
-  - [x] LiDAR: Woosh SDK `ScannerData` 수신 → `/scan` 발행
+  - `/scan`, `/odom`, TF(`odom → base_link`): **`woosh_sensor_bridge.py`가 유일한 발행 주체**
+  - 모든 모드에서 동일하게 SDK `scanner_data_sub` 구독 → `sensor_msgs/LaserScan` 변환 → `/scan` 발행
+  - `woosh_service_driver.py`가 항상 sensor_bridge를 subprocess로 기동 (모드 무관)
+  - SLAM/AMCL launch 파일은 `launch_sensor_bridge` arg(default: `true`)로 중복 기동 방지
+    - 단독 실행 (`roslaunch gmapping.launch`): sensor_bridge가 launch 파일 내에서 기동
+    - service_driver 통합 실행 (`woosh_service_driver.py gmap`): service_driver가 sensor_bridge 기동 → launch 파일에 `launch_sensor_bridge:=false` 전달
+- [x] LiDAR / IMU / 바퀴 엔코더 입력 상태 점검
+  - [x] LiDAR: `woosh_sensor_bridge.py` → SDK `scanner_data_sub` 구독 → `/scan` 발행 (`frame_id: laser`)
   - [ ] IMU: Woosh SDK 미제공 — 미구현
   - [ ] 바퀴 엔코더: 직접 엔코더 없음 — twist 적분 기반 합성 오도메트리로 대체 중
 - [x] `base_link`, `laser`, `odom`, `map` 프레임 구조 점검

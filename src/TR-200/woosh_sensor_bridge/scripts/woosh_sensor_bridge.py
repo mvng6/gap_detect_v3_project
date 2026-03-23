@@ -5,7 +5,7 @@
 Woosh TR-200 센서 브릿지 노드
 
 Woosh SDK에서 레이저 스캔과 속도 데이터를 받아 ROS 표준 토픽으로 변환·발행합니다.
-AMCL 로컬리제이션에 필요한 /scan, /odom, TF(odom→base_link)를 제공합니다.
+모든 모드(standalone, GMapping, Cartographer, AMCL)에서 /scan, /odom, TF(odom→base_link)를 제공합니다.
 
 발행 토픽:
   /scan          (sensor_msgs/LaserScan)   — 레이저 스캔
@@ -18,7 +18,7 @@ TF 트리 (이 노드 기준):
   map → odom         (amcl 노드가 발행)
 
 Example:
-  rosrun woosh_slam_amcl woosh_sensor_bridge.py \\
+  rosrun woosh_sensor_bridge woosh_sensor_bridge.py \\
     _robot_ip:=169.254.128.2 _robot_port:=5480
 """
 
@@ -35,7 +35,7 @@ from sensor_msgs.msg import LaserScan
 import tf2_ros
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-WOOSH_ROBOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../../woosh_robot_py"))
+WOOSH_ROBOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../woosh_robot_py"))
 if WOOSH_ROBOT_DIR not in sys.path:
     sys.path.insert(0, WOOSH_ROBOT_DIR)
 
