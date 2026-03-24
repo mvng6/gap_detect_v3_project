@@ -111,9 +111,23 @@
             /global_costmap/costmap         (nav_msgs/OccupancyGrid)
             /global_costmap/costmap_updates (map_msgs/OccupancyGridUpdate)
             /global_costmap/footprint       (geometry_msgs/Polygon)
+
+          [토픽 remap 이유]
+          costmap_2d_node는 내부적으로 Costmap2DROS("costmap", tf)를 생성하며,
+          private NodeHandle이 ~/costmap = /global_costmap/costmap 이 된다.
+          따라서 실제 발행 토픽은 /global_costmap/costmap/costmap 이 되므로,
+          RViz 및 구독자가 기대하는 /global_costmap/costmap 으로 remap 해야 한다.
        ============================================================ -->
   <node pkg="costmap_2d" type="costmap_2d_node" name="global_costmap"
         output="screen">
+    <!-- 토픽 remap: /global_costmap/costmap/costmap → /global_costmap/costmap
+         costmap_2d_node는 내부적으로 Costmap2DROS("costmap", tf)를 생성하며
+         private_nh("~/costmap") 네임스페이스에서 토픽을 발행한다.
+         노드명 global_costmap 기준: ~/costmap/costmap = /global_costmap/costmap/costmap
+         ~ 접두사를 사용하여 private namespace 기준으로 remap해야 한다. -->
+    <remap from="~costmap/costmap"         to="~costmap" />
+    <remap from="~costmap/costmap_updates" to="~costmap_updates" />
+    <remap from="~costmap/footprint"       to="~footprint" />
     <!-- 공통 파라미터 (footprint, observation_sources) -->
     <rosparam file="$(find woosh_costmap)/config/costmap_common_params.yaml"
               command="load" ns="costmap" />

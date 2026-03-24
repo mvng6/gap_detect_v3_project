@@ -520,8 +520,12 @@ class StackLauncher:
             ("/odom", Odometry, "Odometry /odom"),
         ]
 
-        if localization_mode in ("amcl", "carto_loc_fix", "carto_loc_nonfix"):
+        if localization_mode in ("amcl", "carto_loc_fix"):
             required_topics.append(("/map", OccupancyGrid, "Map /map"))
+        elif localization_mode == "carto_loc_nonfix":
+            # nonfix: cartographer_occupancy_grid_node는 /carto_map으로 발행
+            # /map(map_server)은 costmap 기동 시 시작되므로 /carto_map을 확인
+            required_topics.append(("/carto_map", OccupancyGrid, "Cartographer Map /carto_map"))
 
         for topic_name, msg_type, label in required_topics:
             remaining = remaining_time()
@@ -1361,7 +1365,9 @@ def main():
             if not nav_prereq_ok:
                 rospy.logwarn("nav_on 필수 준비 신호가 완전히 확인되지 않았지만 Global Costmap 기동을 시도합니다.")
 
-            launch_map_server = (localization_mode == "carto_loc_fix")
+            # carto_loc_nonfix: Cartographer 확률 맵(/carto_map)은 낮은 확률값으로
+            # 내부 벽이 costmap에서 FREE 처리됨 → map_server 정적 pgm으로 대체
+            launch_map_server = localization_mode in ("carto_loc_fix", "carto_loc_nonfix")
             costmap_map = _resolve_nav_map_file(localization_mode, map_file,
                                                 resolved_amcl_map=resolved_amcl_map,
                                                 resolved_state_file=resolved_state)
