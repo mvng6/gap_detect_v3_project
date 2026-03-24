@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<!--
+  cmd_vel_adapter.launch — /cmd_vel → Woosh SDK twist_req() 어댑터 단독 실행용
+
+  사용 예:
+    roslaunch woosh_bringup cmd_vel_adapter.launch robot_ip:=169.254.128.2
+
+  검증:
+    rostopic pub /cmd_vel geometry_msgs/Twist "linear: {x: 0.05}" -r 10
+    # /cmd_vel 중단 후 1초 내 로봇 정지 확인
+-->
+<launch>
+  <arg name="robot_ip"          default="169.254.128.2" />
+  <arg name="robot_port"        default="5480" />
+  <arg name="robot_identity"    default="cmd_vel_adapter" />
+
+  <!-- 속도 제한 -->
+  <arg name="max_linear"        default="0.12" />   <!-- m/s -->
+  <arg name="max_angular"       default="0.5" />    <!-- rad/s -->
+
+  <!-- Watchdog: 이 시간(초) 동안 /cmd_vel 미수신 시 자동 정지 -->
+  <arg name="watchdog_timeout"  default="1.0" />
+
+  <arg name="control_hz"        default="20.0" />
+
+  <node pkg="woosh_bringup"
+        type="cmd_vel_adapter.py"
+        name="cmd_vel_adapter"
+        output="screen">
+    <param name="robot_ip"         value="$(arg robot_ip)" />
+    <param name="robot_port"       value="$(arg robot_port)" />
+    <param name="robot_identity"   value="$(arg robot_identity)" />
+    <param name="max_linear"       value="$(arg max_linear)" />
+    <param name="max_angular"      value="$(arg max_angular)" />
+    <param name="watchdog_timeout" value="$(arg watchdog_timeout)" />
+    <param name="control_hz"       value="$(arg control_hz)" />
+  </node>
+</launch>

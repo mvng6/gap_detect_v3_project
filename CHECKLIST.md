@@ -18,12 +18,12 @@
 
 ## Phase 2: cmd_vel 연결
 
-- [ ] **P2-1** `woosh_bringup/scripts/cmd_vel_adapter.py` 신규 생성
-  - [ ] /cmd_vel 구독자 구현
-  - [ ] 속도 제한 클리핑 (max_linear: 0.12 m/s, max_angular: 0.5 rad/s)
-  - [ ] watchdog timer 구현 (1.0초 타임아웃 → 자동 정지)
-  - [ ] SDK twist_req() 호출
-- [ ] **P2-2** `cmd_vel_adapter.launch` 생성
+- [x] **P2-1** `woosh_bringup/scripts/cmd_vel_adapter.py` 신규 생성
+  - [x] /cmd_vel 구독자 구현
+  - [x] 속도 제한 클리핑 (max_linear: 0.12 m/s, max_angular: 0.5 rad/s)
+  - [x] watchdog timer 구현 (1.0초 타임아웃 → 자동 정지)
+  - [x] SDK twist_req() 호출
+- [x] **P2-2** `cmd_vel_adapter.launch` 생성
 - [ ] **P2-3** 검증: `rostopic pub /cmd_vel geometry_msgs/Twist "linear: {x: 0.05}" -r 10` → 로봇 이동 확인
 - [ ] **P2-4** 검증: /cmd_vel 토픽 중단 → 1초 내 로봇 정지 확인
 
