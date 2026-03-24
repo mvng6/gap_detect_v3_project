@@ -3,6 +3,7 @@
 
 import rospy
 import asyncio
+import math
 import numpy as np
 import sys
 import os
@@ -832,6 +833,25 @@ class SmoothTwistController:
         self.selected_map_source = None # "robot" 또는 "local"
         self.map_ready_event = Event()  # 맵 선택 완료 시그널
 
+        # /odom 기반 실제 이동 거리 피드백
+        self._odom_lock = Lock()
+        self._odom_pose = None  # (x, y) | None — woosh_sensor_bridge가 발행한 최신 odom 위치
+        self._odom_sub = rospy.Subscriber("/odom", Odometry, self._odom_callback, queue_size=5)
+
+    # -- odom 콜백 --
+
+    def _odom_callback(self, msg):
+        """woosh_sensor_bridge가 발행하는 /odom을 수신해 최신 위치를 저장한다.
+
+        ROS 콜백 스레드에서 호출되므로 Lock으로 보호한다.
+        navigation 스택도 이 토픽을 동일하게 소비하므로 별도 처리 없이 공유된다.
+        """
+        with self._odom_lock:
+            self._odom_pose = (
+                msg.pose.pose.position.x,
+                msg.pose.pose.position.y,
+            )
+
     # -- 연결 / 초기화 --
 
     async def connect(self):
@@ -1048,6 +1068,16 @@ class SmoothTwistController:
         abs_distance = abs(distance)
         total_time = self._calculate_motion_time(abs_distance)
 
+        # 이동 시작 시 odom 위치 스냅샷 (없으면 None → 속도 적분 폴백)
+        with self._odom_lock:
+            odom_start = self._odom_pose  # (x, y) or None
+
+        if odom_start is not None:
+            rospy.loginfo("[Quintic] odom 피드백 활성화 (시작 위치: x=%.3f, y=%.3f)",
+                          odom_start[0], odom_start[1])
+        else:
+            rospy.logwarn("[Quintic] /odom 미수신 — 속도 적분 폴백으로 이동 거리 추정")
+
         rospy.loginfo("=" * 50)
         rospy.loginfo("[Quintic] 이동 시작: %+.3fm (%s), 예상 %.2fs",
                       distance, "전진" if direction > 0 else "후진", total_time)
@@ -1057,6 +1087,7 @@ class SmoothTwistController:
         start_time = loop.time()
         last_time = start_time
         last_log_time = start_time
+        cmd_integrated = 0.0  # 속도 적분 누적 (odom 불가 시 폴백용)
 
         while self.is_moving:
             now = loop.time()
@@ -1082,11 +1113,22 @@ class SmoothTwistController:
                 self.is_moving = False
 
             await self._send_twist(self.current_speed)
-            self.estimated_distance += self.current_speed * dt
+            cmd_integrated += self.current_speed * dt
+
+            # 실제 이동 거리: odom 우선, 없으면 속도 적분 폴백
+            with self._odom_lock:
+                current_odom = self._odom_pose
+            if odom_start is not None and current_odom is not None:
+                dx = current_odom[0] - odom_start[0]
+                dy = current_odom[1] - odom_start[1]
+                self.estimated_distance = direction * math.sqrt(dx * dx + dy * dy)
+            else:
+                self.estimated_distance = cmd_integrated
 
             if now - last_log_time >= 0.5:
-                rospy.loginfo("[진행] tau=%.2f, v=%+.3fm/s, d=%+.3fm",
-                              tau, self.current_speed, self.estimated_distance)
+                src = "odom" if (odom_start is not None and current_odom is not None) else "추정"
+                rospy.loginfo("[진행] tau=%.2f, v=%+.3fm/s, d=%+.3fm [%s]",
+                              tau, self.current_speed, self.estimated_distance, src)
                 last_log_time = now
 
             await asyncio.sleep(period)
@@ -1099,10 +1141,11 @@ class SmoothTwistController:
         self.is_moving = False
 
         error = self.estimated_distance - distance
-        rospy.loginfo("[Quintic] 완료: 목표=%+.3fm, 추정=%+.3fm, 오차=%.1fmm",
-                      distance, self.estimated_distance, abs(error) * 1000)
+        src = "odom" if odom_start is not None else "추정"
+        rospy.loginfo("[Quintic] 완료: 목표=%+.3fm, 실제=%+.3fm [%s], 오차=%.1fmm",
+                      distance, self.estimated_distance, src, abs(error) * 1000)
 
-        return True, f"완료: {self.estimated_distance:+.3f}m (오차: {error*1000:+.1f}mm)"
+        return True, f"완료: {self.estimated_distance:+.3f}m [%s] (오차: {error*1000:+.1f}mm)" % src
 
     # -- 메인 루프 --
 
