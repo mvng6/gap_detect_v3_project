@@ -148,24 +148,24 @@ def main():
     ]
 
     for i in range(activate_iteration):
-        # # 1. 두산로봇 홈 포지션 이동
-        # if not execute_dsr_motion(HOME_POSITION, dsr_vel, dsr_acc, dsr_time, 
-        #                         "=== Step 1: Moving to home position ==="):
-        #         return
-        # rospy.sleep(1.0)    # 안정화 대기
+        # 1. 두산로봇 홈 포지션 이동
+        if not execute_dsr_motion(HOME_POSITION, dsr_vel, dsr_acc, dsr_time, 
+                                "=== Step 1: Moving to home position ==="):
+                return
+        rospy.sleep(1.0)    # 안정화 대기
 
-        # # 2. 두산로봇 A-points 경로 구동
-        # rospy.loginfo("=== Step 2: Moving to A-points ===")
-        # for idx, point in enumerate(A_POINTS, 1):
-        #     if not execute_dsr_motion(point, dsr_vel, dsr_acc, dsr_time, 
-        #                             f"2-{idx}. DSR 로봇 A-point{idx} 측정 위치"):
-        #         return
+        # 2. 두산로봇 A-points 경로 구동
+        rospy.loginfo("=== Step 2: Moving to A-points ===")
+        for idx, point in enumerate(A_POINTS, 1):
+            if not execute_dsr_motion(point, dsr_vel, dsr_acc, dsr_time, 
+                                    f"2-{idx}. DSR 로봇 A-point{idx} 측정 위치"):
+                return
         
-        # # 3. 두산로봇 홈 포지션 복귀
-        # rospy.loginfo("=== Step 3: Returning to home position ===")
-        # if not execute_dsr_motion(HOME_POSITION, dsr_vel, dsr_acc, dsr_time, 
-        #                         "3. DSR 로봇 홈 포지션 복귀"):
-        #     return
+        # 3. 두산로봇 홈 포지션 복귀
+        rospy.loginfo("=== Step 3: Returning to home position ===")
+        if not execute_dsr_motion(HOME_POSITION, dsr_vel, dsr_acc, dsr_time, 
+                                "3. DSR 로봇 홈 포지션 복귀"):
+            return
 
         # 4. 모바일 로봇 이동 (첫 번째)
         rospy.loginfo("=== Step 3: Moving mobile robot forward ===")
