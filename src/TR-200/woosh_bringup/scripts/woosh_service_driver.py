@@ -3,6 +3,7 @@
 
 import rospy
 import asyncio
+import math
 import numpy as np
 import sys
 import os
@@ -261,6 +262,20 @@ def _find_costmap_rviz_config():
     return _resolve_file(
         os.path.abspath(os.path.join(script_dir, "../../woosh_navigation/Costmap/woosh_costmap/rviz/costmap_debug.rviz")),
         rospkg_fallback=("woosh_costmap", os.path.join("rviz", "costmap_debug.rviz")),
+    )
+
+
+def _find_move_base_only_launch():
+    return _resolve_file(
+        os.path.abspath(os.path.join(script_dir, "../../woosh_navigation/MoveBase/woosh_navigation_mb/launch/move_base_only.launch")),
+        rospkg_fallback=("woosh_navigation_mb", os.path.join("launch", "move_base_only.launch")),
+    )
+
+
+def _find_cmd_vel_adapter_launch():
+    return _resolve_file(
+        os.path.abspath(os.path.join(script_dir, "../launch/cmd_vel_adapter.launch")),
+        rospkg_fallback=("woosh_bringup", os.path.join("launch", "cmd_vel_adapter.launch")),
     )
 
 
@@ -774,6 +789,43 @@ class StackLauncher:
             rospy.loginfo("Cartographer Localization 시작 [mode=%s] (state_file=%s)", mode, state_file)
         return started
 
+    # -- move_base --
+
+    def start_move_base(self):
+        """move_base 스택을 기동한다 (global/local costmap + navfn + DWA).
+
+        sensor_bridge, map_server, localization이 이미 실행 중이어야 한다.
+        """
+        launch_file = _find_move_base_only_launch()
+        if launch_file is None:
+            rospy.logwarn("move_base_only.launch 파일을 찾을 수 없습니다. move_base를 시작하지 않습니다.")
+            return False
+        started = self._pm.start("move_base 스택", ["roslaunch", launch_file], startup_grace_sec=2.0)
+        if started:
+            rospy.loginfo("move_base 스택 시작 (navfn + DWA + global/local costmap)")
+        return started
+
+    # -- cmd_vel 어댑터 --
+
+    def start_cmd_vel_adapter(self):
+        """cmd_vel_adapter를 기동한다 (move_base /cmd_vel → Woosh SDK).
+
+        move_base가 발행하는 /cmd_vel을 로봇 SDK로 전달하기 위해 필요하다.
+        """
+        launch_file = _find_cmd_vel_adapter_launch()
+        if launch_file is None:
+            rospy.logwarn("cmd_vel_adapter.launch 파일을 찾을 수 없습니다. /cmd_vel이 로봇에 전달되지 않습니다.")
+            return False
+        cmd = [
+            "roslaunch", launch_file,
+            f"robot_ip:={self.robot_ip}",
+            f"robot_port:={self.robot_port}",
+        ]
+        started = self._pm.start("cmd_vel 어댑터", cmd)
+        if started:
+            rospy.loginfo("cmd_vel 어댑터 시작 (move_base /cmd_vel → Woosh SDK)")
+        return started
+
 
 # ---------------------------------------------------------------------------
 # 모션 프로파일 (모바일 로봇의 부드러운 가감속)
@@ -831,6 +883,25 @@ class SmoothTwistController:
         self.selected_map_name = None   # 선택된 맵 이름 (확장자 없음)
         self.selected_map_source = None # "robot" 또는 "local"
         self.map_ready_event = Event()  # 맵 선택 완료 시그널
+
+        # /odom 기반 실제 이동 거리 피드백
+        self._odom_lock = Lock()
+        self._odom_pose = None  # (x, y) | None — woosh_sensor_bridge가 발행한 최신 odom 위치
+        self._odom_sub = rospy.Subscriber("/odom", Odometry, self._odom_callback, queue_size=5)
+
+    # -- odom 콜백 --
+
+    def _odom_callback(self, msg):
+        """woosh_sensor_bridge가 발행하는 /odom을 수신해 최신 위치를 저장한다.
+
+        ROS 콜백 스레드에서 호출되므로 Lock으로 보호한다.
+        navigation 스택도 이 토픽을 동일하게 소비하므로 별도 처리 없이 공유된다.
+        """
+        with self._odom_lock:
+            self._odom_pose = (
+                msg.pose.pose.position.x,
+                msg.pose.pose.position.y,
+            )
 
     # -- 연결 / 초기화 --
 
@@ -1048,6 +1119,16 @@ class SmoothTwistController:
         abs_distance = abs(distance)
         total_time = self._calculate_motion_time(abs_distance)
 
+        # 이동 시작 시 odom 위치 스냅샷 (없으면 None → 속도 적분 폴백)
+        with self._odom_lock:
+            odom_start = self._odom_pose  # (x, y) or None
+
+        if odom_start is not None:
+            rospy.loginfo("[Quintic] odom 피드백 활성화 (시작 위치: x=%.3f, y=%.3f)",
+                          odom_start[0], odom_start[1])
+        else:
+            rospy.logwarn("[Quintic] /odom 미수신 — 속도 적분 폴백으로 이동 거리 추정")
+
         rospy.loginfo("=" * 50)
         rospy.loginfo("[Quintic] 이동 시작: %+.3fm (%s), 예상 %.2fs",
                       distance, "전진" if direction > 0 else "후진", total_time)
@@ -1057,6 +1138,7 @@ class SmoothTwistController:
         start_time = loop.time()
         last_time = start_time
         last_log_time = start_time
+        cmd_integrated = 0.0  # 속도 적분 누적 (odom 불가 시 폴백용)
 
         while self.is_moving:
             now = loop.time()
@@ -1082,11 +1164,22 @@ class SmoothTwistController:
                 self.is_moving = False
 
             await self._send_twist(self.current_speed)
-            self.estimated_distance += self.current_speed * dt
+            cmd_integrated += self.current_speed * dt
+
+            # 실제 이동 거리: odom 우선, 없으면 속도 적분 폴백
+            with self._odom_lock:
+                current_odom = self._odom_pose
+            if odom_start is not None and current_odom is not None:
+                dx = current_odom[0] - odom_start[0]
+                dy = current_odom[1] - odom_start[1]
+                self.estimated_distance = direction * math.sqrt(dx * dx + dy * dy)
+            else:
+                self.estimated_distance = cmd_integrated
 
             if now - last_log_time >= 0.5:
-                rospy.loginfo("[진행] tau=%.2f, v=%+.3fm/s, d=%+.3fm",
-                              tau, self.current_speed, self.estimated_distance)
+                src = "odom" if (odom_start is not None and current_odom is not None) else "추정"
+                rospy.loginfo("[진행] tau=%.2f, v=%+.3fm/s, d=%+.3fm [%s]",
+                              tau, self.current_speed, self.estimated_distance, src)
                 last_log_time = now
 
             await asyncio.sleep(period)
@@ -1099,10 +1192,11 @@ class SmoothTwistController:
         self.is_moving = False
 
         error = self.estimated_distance - distance
-        rospy.loginfo("[Quintic] 완료: 목표=%+.3fm, 추정=%+.3fm, 오차=%.1fmm",
-                      distance, self.estimated_distance, abs(error) * 1000)
+        src = "odom" if odom_start is not None else "추정"
+        rospy.loginfo("[Quintic] 완료: 목표=%+.3fm, 실제=%+.3fm [%s], 오차=%.1fmm",
+                      distance, self.estimated_distance, src, abs(error) * 1000)
 
-        return True, f"완료: {self.estimated_distance:+.3f}m (오차: {error*1000:+.1f}mm)"
+        return True, f"완료: {self.estimated_distance:+.3f}m [%s] (오차: {error*1000:+.1f}mm)" % src
 
     # -- 메인 루프 --
 
@@ -1148,7 +1242,8 @@ def _parse_cli_args(argv):
         "carto_map": False,
         "carto_loc_fix": False,    # 고정 맵 localization (AMCL 유사)
         "carto_loc_nonfix": False, # 서브맵 업데이트 포함 localization
-        "nav_on": False,           # localization 연동 Global Costmap (costmap_2d)
+        "nav_on": False,           # localization 연동 Global Costmap (costmap_2d standalone)
+        "move_base_on": False,     # move_base 자율 내비게이션 (navfn + DWA + cmd_vel_adapter)
         "legacy_costmap": False,   # 구버전 별칭
     }
     map_file = None
@@ -1163,6 +1258,7 @@ def _parse_cli_args(argv):
         "carto_loc_fix": "carto_loc_fix", "--carto_loc_fix": "carto_loc_fix",
         "carto_loc_nonfix": "carto_loc_nonfix", "--carto_loc_nonfix": "carto_loc_nonfix",
         "nav_on": "nav_on", "--nav_on": "nav_on",
+        "move_base_on": "move_base_on", "--move_base_on": "move_base_on",
         "costmap": "legacy_costmap", "--costmap": "legacy_costmap",
     }
 
@@ -1319,6 +1415,18 @@ def main():
         rospy.logerr("`nav_on`은 SLAM 모드(gmap, carto_map)와 함께 사용할 수 없습니다.")
         return
 
+    if flags["move_base_on"] and localization_mode is None:
+        rospy.logerr("`move_base_on`은 localization 모드와 함께 사용해야 합니다: amcl | carto_loc_fix | carto_loc_nonfix")
+        return
+
+    if flags["move_base_on"] and (flags["gmap"] or flags["carto_map"]):
+        rospy.logerr("`move_base_on`은 SLAM 모드(gmap, carto_map)와 함께 사용할 수 없습니다.")
+        return
+
+    if flags["move_base_on"] and flags["nav_on"]:
+        rospy.logwarn("`nav_on`과 `move_base_on`이 동시에 지정됐습니다. `move_base_on`을 우선 적용합니다.")
+        flags["nav_on"] = False
+
     Thread(target=_run_asyncio, daemon=True).start()
     rospy.Service('mobile_move', MoveMobile, service_handler)
 
@@ -1357,34 +1465,43 @@ def main():
         resolved_state = _resolve_state_file(state_file)
         localization_started = launcher.start_cartographer_localization(resolved_state, mode=_carto_loc_mode)
 
-    if flags["nav_on"]:
+    if flags["nav_on"] or flags["move_base_on"]:
         if not localization_started:
-            rospy.logerr("localization 스택이 정상적으로 시작되지 않아 `nav_on`을 중단합니다.")
+            rospy.logerr("localization 스택이 정상적으로 시작되지 않아 nav 스택을 중단합니다.")
         else:
             nav_prereq_ok = launcher.wait_for_nav_prerequisites(localization_mode)
             if not nav_prereq_ok:
-                rospy.logwarn("nav_on 필수 준비 신호가 완전히 확인되지 않았지만 Global Costmap 기동을 시도합니다.")
+                rospy.logwarn("nav 필수 준비 신호가 완전히 확인되지 않았지만 기동을 시도합니다.")
 
-            # carto_loc_nonfix: Cartographer 확률 맵(/carto_map)은 낮은 확률값으로
-            # 내부 벽이 costmap에서 FREE 처리됨 → map_server 정적 pgm으로 대체
-            launch_map_server = localization_mode in ("carto_loc_fix", "carto_loc_nonfix")
-            costmap_map = _resolve_nav_map_file(localization_mode, map_file,
-                                                resolved_amcl_map=resolved_amcl_map,
-                                                resolved_state_file=resolved_state)
-            rospy.loginfo("nav_on 요청 감지 — localization=%s, costmap map_server=%s",
-                          localization_mode, "on" if launch_map_server else "off")
-            costmap_started = launcher.start_costmap(costmap_map, launch_map_server=launch_map_server,
-                                                     launch_map_odom_tf=False,
-                                                     launch_base_laser_tf=False)
-            if costmap_started:
-                launcher.wait_for_costmap_ready(localization_mode=localization_mode)
+            if flags["move_base_on"]:
+                # move_base 모드: global/local costmap + navfn + DWA 포함
+                # cmd_vel_adapter: move_base /cmd_vel → Woosh SDK 전달
+                rospy.loginfo("move_base_on 요청 감지 — localization=%s", localization_mode)
+                launcher.start_cmd_vel_adapter()
+                launcher.start_move_base()
+            else:
+                # nav_on 모드: standalone Global Costmap (costmap_2d_node)
+                # carto_loc_nonfix: Cartographer 확률 맵(/carto_map)은 낮은 확률값으로
+                # 내부 벽이 costmap에서 FREE 처리됨 → map_server 정적 pgm으로 대체
+                launch_map_server = localization_mode in ("carto_loc_fix", "carto_loc_nonfix")
+                costmap_map = _resolve_nav_map_file(localization_mode, map_file,
+                                                    resolved_amcl_map=resolved_amcl_map,
+                                                    resolved_state_file=resolved_state)
+                rospy.loginfo("nav_on 요청 감지 — localization=%s, costmap map_server=%s",
+                              localization_mode, "on" if launch_map_server else "off")
+                costmap_started = launcher.start_costmap(costmap_map, launch_map_server=launch_map_server,
+                                                         launch_map_odom_tf=False,
+                                                         launch_base_laser_tf=False)
+                if costmap_started:
+                    launcher.wait_for_costmap_ready(localization_mode=localization_mode)
 
     rospy.loginfo("서버 시작됨! (Quintic Minimum Jerk 정밀 제어)")
     rospy.loginfo("  rosservice call /mobile_move \"{distance: 0.3}\"")
     rospy.loginfo("  옵션: rviz_on | amcl [map_file:=...] | gmap | carto_map")
     rospy.loginfo("         carto_loc_fix [state_file:=...]      — 고정 맵 localization (AMCL 유사)")
     rospy.loginfo("         carto_loc_nonfix [state_file:=...]   — 서브맵 업데이트 + pose 보정")
-    rospy.loginfo("         nav_on [map_file:=...]               — 선택한 localization에 Global Costmap 적용")
+    rospy.loginfo("         nav_on [map_file:=...]               — localization + Global Costmap (costmap_2d standalone)")
+    rospy.loginfo("         move_base_on [map_file:=...]         — localization + move_base 자율 내비게이션 (navfn + DWA)")
     rospy.spin()
 
 

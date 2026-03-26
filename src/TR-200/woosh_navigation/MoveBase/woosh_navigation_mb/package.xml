@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>woosh_navigation_mb</name>
+  <version>0.1.0</version>
+  <description>move_base navigation stack for Woosh TR-200 mobile robot (ROS1 Noetic)</description>
+
+  <maintainer email="djlee2@katech.re.kr">LDJ</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>move_base</depend>
+  <depend>nav_core</depend>
+  <depend>navfn</depend>
+  <depend>dwa_local_planner</depend>
+  <depend>costmap_2d</depend>
+  <depend>map_server</depend>
+  <depend>amcl</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>tf2_ros</depend>
+
+  <exec_depend>woosh_sensor_bridge</exec_depend>
+  <exec_depend>woosh_slam_amcl</exec_depend>
+  <exec_depend>woosh_costmap</exec_depend>
+  <exec_depend>rviz</exec_depend>
+
+  <export/>
+</package>

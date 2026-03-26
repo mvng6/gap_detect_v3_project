@@ -9,8 +9,8 @@ Woosh SDK에서 레이저 스캔과 속도 데이터를 받아 ROS 표준 토픽
 
 발행 토픽:
   /scan          (sensor_msgs/LaserScan)   — 레이저 스캔
-  /odom          (nav_msgs/Odometry)       — SDK PoseSpeed.pose 기반 오도메트리 (IMU 퓨전 포함)
-  TF             odom → base_link
+  /odom_raw      (nav_msgs/Odometry)       — SDK PoseSpeed.pose 기반 원시 오도메트리 (IMU 퓨전 포함)
+  TF             odom → base_link  (publish_tf:=true 일 때만)
 
 TF 트리 (이 노드 기준):
   odom → base_link   (이 노드가 발행)
@@ -66,6 +66,7 @@ class WooshSensorBridgeNode:
 
         self.publish_hz = max(1.0, float(rospy.get_param("~publish_hz", 10.0)))
         self.state_poll_sec = max(0.1, float(rospy.get_param("~state_poll_sec", 0.1)))
+        self.publish_tf = rospy.get_param("~publish_tf", True)
 
         self.robot = None
         self.sdk_connected = False
@@ -89,7 +90,7 @@ class WooshSensorBridgeNode:
 
         # 발행자
         self.scan_pub = rospy.Publisher("/scan", LaserScan, queue_size=10)
-        self.odom_pub = rospy.Publisher("/odom", Odometry, queue_size=10)
+        self.odom_pub = rospy.Publisher("/odom_raw", Odometry, queue_size=10)
         self.tf_broadcaster = tf2_ros.TransformBroadcaster()
 
     def _create_sdk_logger(self):
@@ -293,16 +294,17 @@ class WooshSensorBridgeNode:
         now = rospy.Time.now()
         quat = _yaw_to_quaternion(self.odom_theta)
 
-        # TF: odom → base_link
-        t = TransformStamped()
-        t.header.stamp = now
-        t.header.frame_id = self.odom_frame
-        t.child_frame_id = self.base_frame
-        t.transform.translation.x = self.odom_x
-        t.transform.translation.y = self.odom_y
-        t.transform.translation.z = 0.0
-        t.transform.rotation = quat
-        self.tf_broadcaster.sendTransform(t)
+        # TF: odom → base_link (publish_tf 파라미터로 제어 — EKF 사용 시 false로 설정)
+        if self.publish_tf:
+            t = TransformStamped()
+            t.header.stamp = now
+            t.header.frame_id = self.odom_frame
+            t.child_frame_id = self.base_frame
+            t.transform.translation.x = self.odom_x
+            t.transform.translation.y = self.odom_y
+            t.transform.translation.z = 0.0
+            t.transform.rotation = quat
+            self.tf_broadcaster.sendTransform(t)
 
         # Odometry 메시지
         odom = Odometry()
