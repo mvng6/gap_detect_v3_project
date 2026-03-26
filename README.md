@@ -53,16 +53,46 @@ rosrun woosh_bringup woosh_service_driver.py rviz_on
 지도 생성(GMapping SLAM)과 함께 실행하려면:
 
 ```bash
-rosrun woosh_bringup woosh_service_driver.py slam
+rosrun woosh_bringup woosh_service_driver.py gmap
 ```
 
 지도 생성(Cartographer SLAM)과 함께 실행하려면:
 
 ```bash
-rosrun woosh_bringup woosh_service_driver.py carto
+rosrun woosh_bringup woosh_service_driver.py carto_map
+```
+
+Cartographer 로컬라이제이션(고정 맵)과 함께 실행하려면:
+
+```bash
+rosrun woosh_bringup woosh_service_driver.py carto_loc_fix
+```
+
+Cartographer 로컬라이제이션(서브맵 업데이트 포함)과 함께 실행하려면:
+
+```bash
+rosrun woosh_bringup woosh_service_driver.py carto_loc_nonfix
 ```
 
 > 생성한 지도 저장 방법은 아래 `실행 방법 > 지도 생성 및 지도 파일 준비` 섹션을 참조하세요.
+
+내비게이션(Global Costmap)까지 함께 활성화하려면:
+
+```bash
+rosrun woosh_bringup woosh_service_driver.py amcl nav_on map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
+```
+
+Cartographer 고정 맵 localization + nav_on:
+
+```bash
+rosrun woosh_bringup woosh_service_driver.py carto_loc_fix nav_on state_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.pbstream
+```
+
+Cartographer 서브맵 업데이트 localization + nav_on:
+
+```bash
+rosrun woosh_bringup woosh_service_driver.py carto_loc_nonfix nav_on state_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.pbstream
+```
 
 로컬라이제이션(AMCL, 위치 추정)과 함께 실행하려면:
 
@@ -209,7 +239,7 @@ roslaunch woosh_bringup woosh_rviz_debug.launch robot_ip:=169.254.128.2
 roslaunch woosh_slam_gmapping gmapping.launch robot_ip:=169.254.128.2
 
 # 1단계-B: woosh_service_driver 와 통합 실행 (권장)
-rosrun woosh_bringup woosh_service_driver.py slam
+rosrun woosh_bringup woosh_service_driver.py gmap
 
 # 2단계: 로봇을 탐색 영역 전체에 걸쳐 이동시킵니다.
 # /map 발행 확인: rostopic hz /map
@@ -226,7 +256,7 @@ roslaunch woosh_slam_gmapping save_map.launch map_name:=woosh_map
 roslaunch woosh_slam_cartographer cartographer.launch robot_ip:=169.254.128.2
 
 # 1단계-B: woosh_service_driver 와 통합 실행 (권장)
-rosrun woosh_bringup woosh_service_driver.py carto
+rosrun woosh_bringup woosh_service_driver.py carto_map
 
 # 2단계: 로봇을 탐색 영역 전체에 걸쳐 이동시킵니다.
 
@@ -396,19 +426,24 @@ a0509, **a0912**, e0509, h2017, h2515, m0609, m0617, m1013, m1509
 
 ### 6. 로컬라이제이션
 - [x] AMCL 로컬리제이션 (맵 기반 위치 추정)
+- [x] Cartographer 로컬리제이션 — fix 모드 (고정 맵, AMCL 유사)
+- [x] Cartographer 로컬리제이션 — nonfix 모드 (서브맵 업데이트 포함)
 - [ ] 초기 자세 설정 절차 정리 (`2D Pose Estimate`)
 - [ ] AMCL 파라미터 튜닝
 - [ ] AMCL 위치 오차 반복 측정
 - [ ] 재시작 후 재로컬라이제이션 절차 검증
 
 ### 7. Costmap 구성
-- [ ] Global Costmap 구성
+- [x] Global Costmap 구성
+  - [x] Static Layer 구성 (map_server `/map` 구독)
+  - [x] Obstacle Layer 구성 (LiDAR `/scan` 기반 동적 장애물)
+  - [x] Inflation Layer 구성 (inflation_radius: 0.55m, cost_scaling_factor: 3.0)
+  - [x] `woosh_costmap` 패키지 생성 (`src/TR-200/woosh_navigation/Costmap/woosh_costmap/`)
+  - [x] `woosh_service_driver.py` — `nav_on` CLI 플래그 추가
+  - [ ] 장애물 반영 / 제거 동작 확인 (실기 테스트 필요)
+  - [ ] 동적 장애물 대응 여부 점검
+  - [ ] inflation_radius / cost_scaling_factor 파라미터 튜닝
 - [ ] Local Costmap 구성
-- [ ] Static Layer 구성
-- [ ] Obstacle Layer 구성
-- [ ] Inflation Layer 구성
-- [ ] 장애물 반영 / 제거 동작 확인
-- [ ] 동적 장애물 대응 여부 점검
 
 ### 8. 경로 계획 및 자율주행
 - [ ] 자율 내비게이션 (`move_base`)

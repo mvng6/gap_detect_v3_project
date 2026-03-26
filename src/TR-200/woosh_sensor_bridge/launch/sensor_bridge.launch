@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<!--
+  sensor_bridge.launch — woosh_sensor_bridge 단독 실행용 런치 파일
+
+  발행 토픽:
+    /scan       (sensor_msgs/LaserScan)  — LiDAR 스캔
+    /odom_raw   (nav_msgs/Odometry)      — 원시 오도메트리 (EKF 입력용)
+    TF          odom → base_link         (publish_tf:=true 일 때)
+
+  사용 예:
+    roslaunch woosh_sensor_bridge sensor_bridge.launch robot_ip:=169.254.128.2
+    roslaunch woosh_sensor_bridge sensor_bridge.launch robot_ip:=169.254.128.2 publish_tf:=false
+-->
+<launch>
+  <arg name="robot_ip"       default="169.254.128.2" />
+  <arg name="robot_port"     default="5480" />
+  <arg name="robot_identity" default="sensor_bridge" />
+
+  <arg name="odom_frame"  default="odom" />
+  <arg name="base_frame"  default="base_link" />
+  <arg name="laser_frame" default="laser" />
+
+  <arg name="publish_hz"      default="10.0" />
+  <arg name="state_poll_sec"  default="0.1" />
+  <!-- EKF 사용 시 false 로 설정하여 TF 중복 방지 (Phase 4) -->
+  <arg name="publish_tf"      default="true" />
+
+  <node pkg="woosh_sensor_bridge"
+        type="woosh_sensor_bridge.py"
+        name="woosh_sensor_bridge"
+        output="screen">
+    <param name="robot_ip"       value="$(arg robot_ip)" />
+    <param name="robot_port"     value="$(arg robot_port)" />
+    <param name="robot_identity" value="$(arg robot_identity)" />
+    <param name="odom_frame"     value="$(arg odom_frame)" />
+    <param name="base_frame"     value="$(arg base_frame)" />
+    <param name="laser_frame"    value="$(arg laser_frame)" />
+    <param name="publish_hz"     value="$(arg publish_hz)" />
+    <param name="state_poll_sec" value="$(arg state_poll_sec)" />
+    <param name="publish_tf"     value="$(arg publish_tf)" />
+  </node>
+
+  <!-- base_link → laser 정적 TF (레이저 센서 높이: 0.25 m) -->
+  <node pkg="tf2_ros"
+        type="static_transform_publisher"
+        name="base_link_to_laser"
+        args="0 0 0.25 0 0 0 base_link laser" />
+</launch>

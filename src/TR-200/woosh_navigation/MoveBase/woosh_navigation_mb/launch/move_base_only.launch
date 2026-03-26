@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<!--
+  move_base_only.launch — move_base 단독 실행용
+  ============================================================
+  woosh_service_driver.py가 이미 아래를 실행 중인 환경에서 사용:
+    - woosh_sensor_bridge  (sensor_bridge 실행 중)
+    - map_server           (AMCL/carto_loc launch에 포함)
+    - AMCL / Cartographer  (TF map→odom 발행 중)
+    - cmd_vel_adapter      (move_base_on 플래그로 자동 기동)
+
+  이 파일은 woosh_service_driver.py의 move_base_on 플래그에서
+  자동으로 호출됩니다. 직접 실행 시:
+    roslaunch woosh_navigation_mb move_base_only.launch
+-->
+<launch>
+  <arg name="map_frame"  default="map" />
+  <arg name="odom_frame" default="odom" />
+  <arg name="base_frame" default="base_link" />
+
+  <!-- ============================================================
+       move_base — 전역/지역 경로 계획 + 속도 명령 발행
+       구독: /move_base_simple/goal, /scan, /odom, /map
+       발행: /cmd_vel, /move_base/result
+       ============================================================ -->
+  <node pkg="move_base" type="move_base" name="move_base"
+        respawn="false" output="screen">
+
+    <param name="base_global_planner" value="navfn/NavfnROS" />
+    <param name="base_local_planner"  value="dwa_local_planner/DWAPlannerROS" />
+
+    <!-- move_base 공통 파라미터 -->
+    <rosparam file="$(find woosh_navigation_mb)/config/move_base_params.yaml"
+              command="load" />
+
+    <!-- Global Costmap (woosh_costmap 공유) -->
+    <rosparam file="$(find woosh_costmap)/config/costmap_common_params.yaml"
+              command="load" ns="global_costmap" />
+    <rosparam file="$(find woosh_costmap)/config/global_costmap_params.yaml"
+              command="load" ns="global_costmap" />
+    <param name="global_costmap/global_frame"     value="$(arg map_frame)" />
+    <param name="global_costmap/robot_base_frame" value="$(arg base_frame)" />
+
+    <!-- Local Costmap -->
+    <rosparam file="$(find woosh_costmap)/config/costmap_common_params.yaml"
+              command="load" ns="local_costmap" />
+    <rosparam file="$(find woosh_navigation_mb)/config/local_costmap_params.yaml"
+              command="load" ns="local_costmap" />
+    <param name="local_costmap/global_frame"     value="$(arg odom_frame)" />
+    <param name="local_costmap/robot_base_frame" value="$(arg base_frame)" />
+
+    <!-- Global Planner (navfn/Dijkstra) -->
+    <rosparam file="$(find woosh_navigation_mb)/config/global_planner_params.yaml"
+              command="load" />
+
+    <!-- Local Planner (DWA) -->
+    <rosparam file="$(find woosh_navigation_mb)/config/local_planner_params.yaml"
+              command="load" />
+
+  </node>
+</launch>

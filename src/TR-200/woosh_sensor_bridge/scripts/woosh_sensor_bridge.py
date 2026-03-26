@@ -9,8 +9,8 @@ Woosh SDK에서 레이저 스캔과 속도 데이터를 받아 ROS 표준 토픽
 
 발행 토픽:
   /scan          (sensor_msgs/LaserScan)   — 레이저 스캔
-  /odom          (nav_msgs/Odometry)       — 합성 오도메트리 (twist 적분)
-  TF             odom → base_link
+  /odom_raw      (nav_msgs/Odometry)       — SDK PoseSpeed.pose 기반 원시 오도메트리 (IMU 퓨전 포함)
+  TF             odom → base_link  (publish_tf:=true 일 때만)
 
 TF 트리 (이 노드 기준):
   odom → base_link   (이 노드가 발행)
@@ -66,6 +66,7 @@ class WooshSensorBridgeNode:
 
         self.publish_hz = max(1.0, float(rospy.get_param("~publish_hz", 10.0)))
         self.state_poll_sec = max(0.1, float(rospy.get_param("~state_poll_sec", 0.1)))
+        self.publish_tf = rospy.get_param("~publish_tf", True)
 
         self.robot = None
         self.sdk_connected = False
@@ -74,15 +75,22 @@ class WooshSensorBridgeNode:
         self.latest_scan = None
         self.latest_pose_speed = None
 
-        # 오도메트리 적분 상태 (odom 프레임 기준)
+        # 오도메트리 상태 (odom 프레임 기준)
         self.odom_x = 0.0
         self.odom_y = 0.0
         self.odom_theta = 0.0
         self.last_twist_time = None
 
+        # SDK PoseSpeed.pose 직접 활용을 위한 원점 기록
+        # 로봇 내부 위치추정(IMU+wheel odom 퓨전)값을 odom 원점 기준 상대좌표로 변환
+        self._sdk_pose_initialized = False
+        self._pose_origin_x = 0.0
+        self._pose_origin_y = 0.0
+        self._pose_origin_theta = 0.0
+
         # 발행자
         self.scan_pub = rospy.Publisher("/scan", LaserScan, queue_size=10)
-        self.odom_pub = rospy.Publisher("/odom", Odometry, queue_size=10)
+        self.odom_pub = rospy.Publisher("/odom_raw", Odometry, queue_size=10)
         self.tf_broadcaster = tf2_ros.TransformBroadcaster()
 
     def _create_sdk_logger(self):
@@ -106,11 +114,55 @@ class WooshSensorBridgeNode:
         self.latest_scan = scan
 
     def _on_pose(self, pose_speed):
-        self._integrate_twist(pose_speed)
+        self._update_odom_from_sdk_pose(pose_speed)
         self.latest_pose_speed = pose_speed
 
-    def _integrate_twist(self, pose_speed):
-        """PoseSpeed.twist를 시간 적분하여 odom 포즈를 갱신."""
+    def _update_odom_from_sdk_pose(self, pose_speed):
+        """SDK PoseSpeed.pose를 odom 상태에 반영한다.
+
+        로봇 내부 위치추정값(wheel odom + IMU 퓨전 결과인 PoseSpeed.pose)을
+        odom 프레임 원점 기준 상대좌표로 변환하여 사용한다.
+        공식 ROS 인터페이스의 /odom (IMU fusion) 토픽과 동일한 데이터 소스이다.
+
+        PoseSpeed.pose가 유효하지 않을 때(0,0,0)는 twist 적분 방식으로 폴백한다.
+        """
+        pose = pose_speed.pose
+
+        # pose 유효성 검사: 로봇이 데이터를 아직 제공하지 않으면 (0,0,0)
+        has_valid_pose = not (pose.x == 0.0 and pose.y == 0.0 and pose.theta == 0.0)
+
+        if not has_valid_pose:
+            # Fallback: twist 적분
+            self._integrate_twist_fallback(pose_speed)
+            return
+
+        if not self._sdk_pose_initialized:
+            # 첫 유효 pose를 odom 원점으로 설정
+            self._pose_origin_x = pose.x
+            self._pose_origin_y = pose.y
+            self._pose_origin_theta = pose.theta
+            self._sdk_pose_initialized = True
+            rospy.loginfo(
+                "SDK pose 원점 설정: x=%.3f y=%.3f theta=%.3f (rad)",
+                pose.x, pose.y, pose.theta,
+            )
+            return
+
+        # 원점 기준 상대 변위를 odom 프레임으로 변환
+        dx_world = pose.x - self._pose_origin_x
+        dy_world = pose.y - self._pose_origin_y
+        cos_o = math.cos(self._pose_origin_theta)
+        sin_o = math.sin(self._pose_origin_theta)
+
+        self.odom_x = dx_world * cos_o + dy_world * sin_o
+        self.odom_y = -dx_world * sin_o + dy_world * cos_o
+        self.odom_theta = math.atan2(
+            math.sin(pose.theta - self._pose_origin_theta),
+            math.cos(pose.theta - self._pose_origin_theta),
+        )
+
+    def _integrate_twist_fallback(self, pose_speed):
+        """PoseSpeed.pose가 없을 때 twist 적분으로 odom을 추정하는 폴백."""
         now = rospy.get_time()
 
         if self.last_twist_time is None:
@@ -126,12 +178,10 @@ class WooshSensorBridgeNode:
         linear = pose_speed.twist.linear
         angular = pose_speed.twist.angular
 
-        # 차동 구동 모델: vx, vy=0, omega
         self.odom_x += linear * math.cos(self.odom_theta) * dt
         self.odom_y += linear * math.sin(self.odom_theta) * dt
         self.odom_theta += angular * dt
 
-        # 각도 정규화 (-pi ~ pi)
         self.odom_theta = math.atan2(
             math.sin(self.odom_theta), math.cos(self.odom_theta)
         )
@@ -178,6 +228,17 @@ class WooshSensorBridgeNode:
         if info.pose_speed:
             self.latest_pose_speed = info.pose_speed
             self.last_twist_time = rospy.get_time()
+            # 초기 SDK pose를 odom 원점으로 미리 설정
+            init_pose = info.pose_speed.pose
+            if init_pose.x != 0.0 or init_pose.y != 0.0 or init_pose.theta != 0.0:
+                self._pose_origin_x = init_pose.x
+                self._pose_origin_y = init_pose.y
+                self._pose_origin_theta = init_pose.theta
+                self._sdk_pose_initialized = True
+                rospy.loginfo(
+                    "초기 SDK pose 원점 설정: x=%.3f y=%.3f theta=%.3f (rad)",
+                    init_pose.x, init_pose.y, init_pose.theta,
+                )
 
         # 구독 등록
         await self.robot.robot_pose_speed_sub(self._on_pose, NO_PRINT)
@@ -193,7 +254,7 @@ class WooshSensorBridgeNode:
                 PoseSpeed(), NO_PRINT, NO_PRINT
             )
             if ok and pose_speed:
-                self._integrate_twist(pose_speed)
+                self._update_odom_from_sdk_pose(pose_speed)
                 self.latest_pose_speed = pose_speed
         except Exception:
             pass
@@ -233,16 +294,17 @@ class WooshSensorBridgeNode:
         now = rospy.Time.now()
         quat = _yaw_to_quaternion(self.odom_theta)
 
-        # TF: odom → base_link
-        t = TransformStamped()
-        t.header.stamp = now
-        t.header.frame_id = self.odom_frame
-        t.child_frame_id = self.base_frame
-        t.transform.translation.x = self.odom_x
-        t.transform.translation.y = self.odom_y
-        t.transform.translation.z = 0.0
-        t.transform.rotation = quat
-        self.tf_broadcaster.sendTransform(t)
+        # TF: odom → base_link (publish_tf 파라미터로 제어 — EKF 사용 시 false로 설정)
+        if self.publish_tf:
+            t = TransformStamped()
+            t.header.stamp = now
+            t.header.frame_id = self.odom_frame
+            t.child_frame_id = self.base_frame
+            t.transform.translation.x = self.odom_x
+            t.transform.translation.y = self.odom_y
+            t.transform.translation.z = 0.0
+            t.transform.rotation = quat
+            self.tf_broadcaster.sendTransform(t)
 
         # Odometry 메시지
         odom = Odometry()

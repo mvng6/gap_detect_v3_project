@@ -99,15 +99,22 @@
         output="log" />
 
   <!-- ============================================================
-       4. cartographer_occupancy_grid_node — /map 발행
-          fix 모드에서는 실행하지 않음 (/map 고정 — 원본 pbstream 그대로 유지)
-          nonfix 모드에서는 새 서브맵 포함 /map 지속 업데이트
+       4. cartographer_occupancy_grid_node — /carto_map 발행
+          fix 모드에서는 실행하지 않음 (cartographer_occupancy_grid_node 미실행)
+          nonfix 모드에서는 새 서브맵 포함 /carto_map 지속 업데이트
+          (/map 은 costmap용 map_server(정적 pgm)가 사용하므로 /carto_map 으로 분리)
        ============================================================ -->
   <node unless="$(eval localization_mode == 'fix')"
         pkg="cartographer_ros" type="cartographer_occupancy_grid_node"
         name="cartographer_occupancy_grid_node"
         args="-resolution 0.03"
-        output="log" />
+        output="log">
+    <!-- /map → /carto_map: costmap의 static_layer는 map_server가 발행하는
+         정적 바이너리 /map을 사용해야 한다. Cartographer 확률 맵(실시간)과
+         costmap이 같은 /map 토픽을 공유하면 낮은 확률값(<65)으로 인해
+         내부 벽이 FREE로 처리되어 costmap이 외벽만 생성되는 문제 발생. -->
+    <remap from="/map" to="/carto_map" />
+  </node>
 
   <!-- ============================================================
        5. RViz (선택적)

@@ -1,0 +1,23 @@
+# ================================================================
+# Global Planner 파라미터 — navfn (Dijkstra)
+# ================================================================
+# move_base의 base_global_planner: navfn/NavfnROS
+
+NavfnROS:
+  # Dijkstra 사용 (A*보다 안정적, 속도 차이 미미한 소규모 맵)
+  use_dijkstra: true
+
+  # 미지 영역 통과 허용
+  # AMCL 초기화 전 또는 맵 외곽 근처에서 경로 탐색 가능
+  allow_unknown: true
+
+  # 전역 경로 탐색 창 (0.0 = 전체 맵 사용)
+  planner_window_x: 0.0
+  planner_window_y: 0.0
+
+  # 기본 경로 비용 (낮을수록 중앙선 선호)
+  default_tolerance: 0.0
+
+  # 목표 지점 주변 허용 반경 (장애물 근처 목표 처리)
+  # 0.0 → move_base의 xy_goal_tolerance에 위임
+  goal_tolerance: 0.0

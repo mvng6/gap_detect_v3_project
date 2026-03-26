@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<!--
+  bringup.launch — Woosh TR-200 통합 브링업
+  포함 스택:
+    1. woosh_sensor_bridge  → /scan, /odom_raw, TF(odom→base_link), TF(base_link→laser)
+    2. cmd_vel_adapter      → /cmd_vel → Woosh SDK twist_req()
+
+  사용 예:
+    roslaunch woosh_bringup bringup.launch robot_ip:=169.254.128.2
+
+  Phase 4 (EKF) 적용 후:
+    roslaunch woosh_bringup bringup.launch robot_ip:=169.254.128.2 publish_tf:=false
+    # → sensor_bridge TF 비활성화, EKF가 odom→base_link TF 담당
+-->
+<launch>
+  <!-- 공통 -->
+  <arg name="robot_ip"   default="169.254.128.2" />
+  <arg name="robot_port" default="5480" />
+
+  <!-- sensor_bridge 옵션 -->
+  <arg name="publish_tf"     default="true" />   <!-- Phase 4 EKF 사용 시 false -->
+  <arg name="publish_hz"     default="10.0" />
+  <arg name="laser_height"   default="0.25" />   <!-- base_link→laser z 오프셋(m) -->
+
+  <!-- cmd_vel_adapter 옵션 -->
+  <arg name="max_linear"        default="0.12" />   <!-- m/s -->
+  <arg name="max_angular"       default="0.5" />    <!-- rad/s -->
+  <arg name="watchdog_timeout"  default="1.0" />    <!-- 초 -->
+  <arg name="control_hz"        default="20.0" />
+
+  <!-- 1. Sensor bridge (scan + odom_raw + TF odom→base_link + TF base_link→laser) -->
+  <include file="$(find woosh_sensor_bridge)/launch/sensor_bridge.launch">
+    <arg name="robot_ip"       value="$(arg robot_ip)" />
+    <arg name="robot_port"     value="$(arg robot_port)" />
+    <arg name="publish_tf"     value="$(arg publish_tf)" />
+    <arg name="publish_hz"     value="$(arg publish_hz)" />
+    <arg name="laser_frame"    value="laser" />
+  </include>
+
+  <!-- 2. cmd_vel adapter (/cmd_vel → SDK) -->
+  <include file="$(find woosh_bringup)/launch/cmd_vel_adapter.launch">
+    <arg name="robot_ip"          value="$(arg robot_ip)" />
+    <arg name="robot_port"        value="$(arg robot_port)" />
+    <arg name="max_linear"        value="$(arg max_linear)" />
+    <arg name="max_angular"       value="$(arg max_angular)" />
+    <arg name="watchdog_timeout"  value="$(arg watchdog_timeout)" />
+    <arg name="control_hz"        value="$(arg control_hz)" />
+  </include>
+</launch>

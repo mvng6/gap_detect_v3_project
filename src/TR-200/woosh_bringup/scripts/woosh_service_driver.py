@@ -3,6 +3,7 @@
 
 import rospy
 import asyncio
+import math
 import numpy as np
 import sys
 import os
@@ -10,8 +11,14 @@ import shutil
 import signal
 import subprocess
 import atexit
+import time
 from queue import Queue, Empty
-from threading import Thread, Event
+from threading import Thread, Event, Lock
+
+import tf2_ros
+from geometry_msgs.msg import PoseWithCovarianceStamped
+from nav_msgs.msg import Odometry, OccupancyGrid
+from sensor_msgs.msg import LaserScan
 
 # === Python 경로 설정 ===
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +42,10 @@ from woosh.proto.robot.robot_pack_pb2 import Twist, SwitchMap, SetRobotPose, Ini
 from woosh.proto.robot.robot_pb2 import RobotInfo, PoseSpeed, OperationState
 from woosh.proto.map.map_pack_pb2 import SceneList
 from woosh.proto.util.robot_pb2 import ControlMode
+
+
+DEFAULT_MAP_FILE = "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml"
+DEFAULT_CARTO_STATE_FILE = "/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.pbstream"
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +114,18 @@ def _find_amcl_rviz_config():
     )
 
 
+def _rviz_config_contains_topic(config_path, topic_name):
+    """RViz 설정 파일에 지정 토픽 문자열이 포함되어 있는지 검사한다."""
+    if not config_path:
+        return False
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return topic_name in f.read()
+    except Exception as exc:
+        rospy.logwarn("RViz 설정 파일 검사 실패 (%s): %s", config_path, exc)
+        return False
+
+
 def _find_local_maps_dir():
     """프로젝트 내 woosh_slam/maps 디렉터리를 반환한다."""
     candidates = [
@@ -152,6 +175,22 @@ def _find_pbstream_for_map(map_name):
     carto_path = os.path.join(maps_dir, f"carto_{map_name}.pbstream")
     if os.path.isfile(carto_path):
         return carto_path
+
+    return None
+
+
+def _find_yaml_for_state_file(state_file):
+    """`.pbstream` 파일과 동일한 basename의 `.yaml` 파일을 탐색한다."""
+    if not state_file:
+        return None
+
+    base, ext = os.path.splitext(state_file)
+    if ext.lower() != ".pbstream":
+        return None
+
+    yaml_path = base + ".yaml"
+    if os.path.isfile(yaml_path):
+        return yaml_path
 
     return None
 
@@ -212,6 +251,34 @@ def _find_cartographer_localization_launch():
     )
 
 
+def _find_costmap_launch():
+    return _resolve_file(
+        os.path.abspath(os.path.join(script_dir, "../../woosh_navigation/Costmap/woosh_costmap/launch/global_costmap.launch")),
+        rospkg_fallback=("woosh_costmap", os.path.join("launch", "global_costmap.launch")),
+    )
+
+
+def _find_costmap_rviz_config():
+    return _resolve_file(
+        os.path.abspath(os.path.join(script_dir, "../../woosh_navigation/Costmap/woosh_costmap/rviz/costmap_debug.rviz")),
+        rospkg_fallback=("woosh_costmap", os.path.join("rviz", "costmap_debug.rviz")),
+    )
+
+
+def _find_move_base_only_launch():
+    return _resolve_file(
+        os.path.abspath(os.path.join(script_dir, "../../woosh_navigation/MoveBase/woosh_navigation_mb/launch/move_base_only.launch")),
+        rospkg_fallback=("woosh_navigation_mb", os.path.join("launch", "move_base_only.launch")),
+    )
+
+
+def _find_cmd_vel_adapter_launch():
+    return _resolve_file(
+        os.path.abspath(os.path.join(script_dir, "../launch/cmd_vel_adapter.launch")),
+        rospkg_fallback=("woosh_bringup", os.path.join("launch", "cmd_vel_adapter.launch")),
+    )
+
+
 def _find_rviz_binary():
     return shutil.which("rviz") or (
         "/opt/ros/noetic/bin/rviz"
@@ -249,6 +316,111 @@ def _validate_map_file(map_file):
     return True
 
 
+def _wait_for_topic_message(topic_name, msg_type, timeout, label=None):
+    """지정 토픽에서 메시지 1개를 받을 때까지 대기한다."""
+    if timeout <= 0.0:
+        return False
+
+    wait_label = label or topic_name
+    rospy.loginfo("%s 준비 대기 중... (최대 %.1fs)", wait_label, timeout)
+
+    try:
+        rospy.wait_for_message(topic_name, msg_type, timeout=timeout)
+        rospy.loginfo("%s 확인 완료", wait_label)
+        return True
+    except rospy.ROSException:
+        rospy.logwarn("%s 대기 타임아웃 (%s)", wait_label, topic_name)
+        return False
+
+
+def _wait_for_transform(target_frame, source_frame, timeout, label=None, poll_period=0.2):
+    """TF 변환이 조회 가능해질 때까지 대기한다."""
+    if timeout <= 0.0:
+        return False
+
+    wait_label = label or f"TF {target_frame} -> {source_frame}"
+    rospy.loginfo("%s 준비 대기 중... (최대 %.1fs)", wait_label, timeout)
+
+    tf_buffer = tf2_ros.Buffer()
+    listener = tf2_ros.TransformListener(tf_buffer)
+    deadline = time.monotonic() + timeout
+    ok = False
+
+    try:
+        while not rospy.is_shutdown() and time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            wait_slice = max(min(remaining, poll_period), 0.05)
+            try:
+                if tf_buffer.can_transform(
+                    target_frame,
+                    source_frame,
+                    rospy.Time(0),
+                    rospy.Duration(wait_slice),
+                ):
+                    ok = True
+                    break
+            except (
+                tf2_ros.LookupException,
+                tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException,
+            ):
+                pass
+    finally:
+        del listener
+
+    if ok:
+        rospy.loginfo("%s 확인 완료", wait_label)
+    else:
+        rospy.logwarn("%s 대기 타임아웃", wait_label)
+
+    return ok
+
+
+def _get_published_topic_map():
+    try:
+        return dict(rospy.get_published_topics())
+    except Exception as exc:
+        rospy.logwarn("발행 토픽 목록 조회 실패: %s", exc)
+        return {}
+
+
+def _log_nav_readiness_diagnostics(localization_mode=None):
+    """nav_on 준비 실패 시 원인을 빠르게 좁히기 위한 진단 로그."""
+    published_topics = _get_published_topic_map()
+    topics_to_check = [
+        "/scan",
+        "/odom",
+        "/map",
+        "/global_costmap/costmap",
+    ]
+
+    if localization_mode == "amcl":
+        topics_to_check.append("/amcl_pose")
+
+    rospy.logwarn("=== nav_on 진단 시작 ===")
+    for topic_name in topics_to_check:
+        topic_type = published_topics.get(topic_name)
+        if topic_type:
+            rospy.logwarn("토픽 확인: %s (%s)", topic_name, topic_type)
+        else:
+            rospy.logwarn("토픽 미발견: %s", topic_name)
+
+    tf_ok = _wait_for_transform(
+        "map",
+        "base_link",
+        timeout=0.5,
+        label="진단용 TF map -> base_link",
+        poll_period=0.1,
+    )
+    if not tf_ok:
+        rospy.logwarn("TF map -> base_link 가 아직 준비되지 않았습니다.")
+
+    if localization_mode == "amcl" and "/amcl_pose" not in published_topics:
+        rospy.logwarn("AMCL pose가 보이지 않습니다. /scan, /odom, 초기 pose 상태를 함께 확인하세요.")
+
+    rospy.logwarn("=== nav_on 진단 종료 ===")
+
+
 # ---------------------------------------------------------------------------
 # 서브프로세스 관리
 # ---------------------------------------------------------------------------
@@ -258,16 +430,53 @@ class SubprocessManager:
 
     def __init__(self):
         self._procs = {}  # name -> Popen
+        self._lock = Lock()
+        self._stopping = set()
 
-    def start(self, name, cmd):
+    def _monitor(self, name, proc):
+        return_code = proc.wait()
+
+        with self._lock:
+            stopping = name in self._stopping
+            current = self._procs.get(name)
+            if current is proc:
+                self._procs.pop(name, None)
+            if stopping:
+                self._stopping.discard(name)
+
+        if rospy.is_shutdown() or stopping:
+            rospy.loginfo("%s 종료됨 (exit=%s)", name, return_code)
+        elif return_code == 0:
+            rospy.logwarn("%s 프로세스가 종료되었습니다. (exit=%s)", name, return_code)
+        else:
+            rospy.logerr("%s 프로세스가 비정상 종료되었습니다. (exit=%s)", name, return_code)
+
+    def start(self, name, cmd, startup_grace_sec=1.5):
         try:
-            self._procs[name] = subprocess.Popen(cmd, start_new_session=True)
+            proc = subprocess.Popen(cmd, start_new_session=True)
+            with self._lock:
+                self._procs[name] = proc
+                self._stopping.discard(name)
+
+            Thread(target=self._monitor, args=(name, proc), daemon=True).start()
+
+            if startup_grace_sec > 0.0:
+                time.sleep(startup_grace_sec)
+                if proc.poll() is not None:
+                    rospy.logerr("%s 시작 직후 종료됨: %s", name, " ".join(cmd))
+                    return False
+
             rospy.loginfo("%s 시작", name)
+            return True
         except Exception as exc:
             rospy.logwarn("%s 시작 실패: %s", name, exc)
+            return False
 
     def stop(self, name):
-        proc = self._procs.pop(name, None)
+        with self._lock:
+            proc = self._procs.pop(name, None)
+            if proc is not None:
+                self._stopping.add(name)
         if proc is None or proc.poll() is not None:
             return
         try:
@@ -304,8 +513,8 @@ class StackLauncher:
         bridge_script = _find_sensor_bridge_script()
         if bridge_script is None:
             rospy.logwarn("woosh_sensor_bridge.py를 찾을 수 없습니다. /scan이 발행되지 않습니다.")
-            return
-        self._pm.start("센서 브릿지", [
+            return False
+        return self._pm.start("센서 브릿지", [
             sys.executable, bridge_script,
             f"_robot_ip:={self.robot_ip}",
             f"_robot_port:={self.robot_port}",
@@ -313,9 +522,93 @@ class StackLauncher:
             "_publish_hz:=10.0",
         ])
 
+    def wait_for_nav_prerequisites(self, localization_mode, timeout=20.0):
+        """nav_on 시작 전 필수 토픽/TF가 준비될 때까지 잠시 대기한다."""
+        deadline = time.monotonic() + timeout
+        all_ok = True
+
+        def remaining_time():
+            return max(deadline - time.monotonic(), 0.0)
+
+        required_topics = [
+            ("/scan", LaserScan, "LiDAR /scan"),
+            ("/odom", Odometry, "Odometry /odom"),
+        ]
+
+        if localization_mode in ("amcl", "carto_loc_fix"):
+            required_topics.append(("/map", OccupancyGrid, "Map /map"))
+        elif localization_mode == "carto_loc_nonfix":
+            # nonfix: cartographer_occupancy_grid_node는 /carto_map으로 발행
+            # /map(map_server)은 costmap 기동 시 시작되므로 /carto_map을 확인
+            required_topics.append(("/carto_map", OccupancyGrid, "Cartographer Map /carto_map"))
+
+        for topic_name, msg_type, label in required_topics:
+            remaining = remaining_time()
+            if remaining <= 0.0:
+                all_ok = False
+                break
+            ok = _wait_for_topic_message(
+                topic_name,
+                msg_type,
+                timeout=min(remaining, 8.0),
+                label=label,
+            )
+            all_ok = all_ok and ok
+
+        if localization_mode == "amcl":
+            remaining = remaining_time()
+            pose_ok = False
+            if remaining > 0.0:
+                pose_ok = _wait_for_topic_message(
+                    "/amcl_pose",
+                    PoseWithCovarianceStamped,
+                    timeout=min(remaining, 8.0),
+                    label="AMCL pose /amcl_pose",
+                )
+
+            remaining = remaining_time()
+            tf_ok = False
+            if remaining > 0.0:
+                tf_ok = _wait_for_transform(
+                    "map",
+                    "base_link",
+                    timeout=min(remaining, 6.0),
+                    label="TF map -> base_link",
+                )
+
+            all_ok = all_ok and (pose_ok or tf_ok)
+
+        elif localization_mode in ("carto_loc_fix", "carto_loc_nonfix"):
+            remaining = remaining_time()
+            if remaining > 0.0:
+                tf_ok = _wait_for_transform(
+                    "map",
+                    "base_link",
+                    timeout=min(remaining, 6.0),
+                    label="TF map -> base_link",
+                )
+                all_ok = all_ok and tf_ok
+            else:
+                all_ok = False
+
+        return all_ok
+
+    def wait_for_costmap_ready(self, localization_mode=None, timeout=15.0):
+        """Global Costmap 토픽이 실제로 나오기 시작하는지 확인한다."""
+        ready = _wait_for_topic_message(
+            "/global_costmap/costmap",
+            OccupancyGrid,
+            timeout=timeout,
+            label="Global Costmap /global_costmap/costmap",
+        )
+        if not ready:
+            rospy.logerr("Global Costmap 토픽이 준비되지 않았습니다.")
+            _log_nav_readiness_diagnostics(localization_mode=localization_mode)
+        return ready
+
     # -- RViz --
 
-    def start_rviz(self, use_amcl_rviz=False):
+    def start_rviz(self, use_amcl_rviz=False, require_nav_costmap=False):
         debug_script = _find_debug_script()
         rviz_bin = _find_rviz_binary()
 
@@ -326,36 +619,55 @@ class StackLauncher:
             rviz_config = _find_rviz_config()
             config_label = "woosh_rviz_debug.rviz"
 
+        # AMCL + nav_on 환경에서 기존 RViz 설정에 costmap 디스플레이가 없으면
+        # costmap 전용 설정으로 폴백하여 시각화 누락을 방지한다.
+        if use_amcl_rviz and require_nav_costmap:
+            has_costmap_topic = _rviz_config_contains_topic(rviz_config, "/global_costmap/costmap")
+            if not has_costmap_topic:
+                fallback = _find_costmap_rviz_config()
+                if fallback:
+                    rospy.logwarn(
+                        "amcl_debug.rviz에 /global_costmap/costmap 표시가 없어 costmap_debug.rviz로 대체합니다."
+                    )
+                    rviz_config = fallback
+                    config_label = "costmap_debug.rviz (fallback)"
+                else:
+                    rospy.logwarn(
+                        "amcl_debug.rviz에 costmap 표시가 없고 대체 RViz 설정도 찾지 못했습니다."
+                    )
+
         if not debug_script:
             rospy.logwarn("`woosh_rviz_debug.py`를 찾지 못해 RViz 지원을 시작하지 않습니다.")
-            return
+            return False
         if not rviz_config:
             rospy.logwarn("RViz 설정 파일(%s)을 찾지 못해 RViz 지원을 시작하지 않습니다.", config_label)
-            return
+            return False
         if not rviz_bin:
             rospy.logwarn("`rviz` 실행 파일을 찾지 못했습니다. `rviz_on` 요청은 건너뜁니다.")
-            return
+            return False
 
-        self._pm.start("RViz 디버그 노드", [
+        debug_ok = self._pm.start("RViz 디버그 노드", [
             sys.executable, debug_script,
             f"_robot_ip:={self.robot_ip}",
             f"_robot_port:={self.robot_port}",
             "_robot_identity:=rviz_debug",
         ])
-        self._pm.start("RViz", [rviz_bin, "-d", rviz_config])
-        rospy.loginfo("RViz 디버그 창 시작 (설정: %s)", config_label)
+        rviz_ok = self._pm.start("RViz", [rviz_bin, "-d", rviz_config])
+        if debug_ok and rviz_ok:
+            rospy.loginfo("RViz 디버그 창 시작 (설정: %s)", config_label)
+        return debug_ok and rviz_ok
 
     # -- AMCL --
 
     def start_amcl(self, map_file):
         if not _validate_map_file(map_file):
             rospy.logerr("AMCL을 시작하지 않습니다. 위 오류를 해결한 후 재시작하세요.")
-            return
+            return False
 
         amcl_launch = _find_amcl_launch()
         if amcl_launch is None:
             rospy.logwarn("amcl.launch 파일을 찾을 수 없습니다. AMCL을 시작하지 않습니다.")
-            return
+            return False
 
         cmd = [
             "roslaunch", amcl_launch,
@@ -370,8 +682,49 @@ class StackLauncher:
         if amcl_rviz_config:
             cmd.append(f"rviz_config:={amcl_rviz_config}")
 
-        self._pm.start("AMCL 스택", cmd)
-        rospy.loginfo("AMCL 스택 시작 (map_file=%s)", map_file)
+        started = self._pm.start("AMCL 스택", cmd)
+        if started:
+            rospy.loginfo("AMCL 스택 시작 (map_file=%s)", map_file)
+        return started
+
+    # -- Global Costmap --
+
+    def start_costmap(
+        self,
+        map_file,
+        launch_map_server=True,
+        launch_map_odom_tf=False,
+        launch_base_laser_tf=True,
+    ):
+        if launch_map_server and not _validate_map_file(map_file):
+            rospy.logerr("Global Costmap을 시작하지 않습니다. 위 오류를 해결한 후 재시작하세요.")
+            return False
+
+        costmap_launch = _find_costmap_launch()
+        if costmap_launch is None:
+            rospy.logwarn("global_costmap.launch 파일을 찾을 수 없습니다. Global Costmap을 시작하지 않습니다.")
+            return False
+
+        cmd = [
+            "roslaunch", costmap_launch,
+            f"robot_ip:={self.robot_ip}",
+            f"robot_port:={self.robot_port}",
+            f"map_file:={map_file}",
+            "launch_rviz:=false",
+            "launch_sensor_bridge:=false",
+            f"launch_map_server:={'true' if launch_map_server else 'false'}",
+            f"launch_map_odom_tf:={'true' if launch_map_odom_tf else 'false'}",
+            f"launch_base_laser_tf:={'true' if launch_base_laser_tf else 'false'}",
+        ]
+
+        costmap_rviz_config = _find_costmap_rviz_config()
+        if costmap_rviz_config:
+            cmd.append(f"rviz_config:={costmap_rviz_config}")
+
+        started = self._pm.start("Global Costmap 스택", cmd)
+        if started:
+            rospy.loginfo("Global Costmap 시작 (map_file=%s)", map_file)
+        return started
 
     # -- SLAM 공통 --
 
@@ -379,7 +732,7 @@ class StackLauncher:
         launch_file = find_launch_fn()
         if launch_file is None:
             rospy.logwarn("%s launch 파일을 찾을 수 없습니다.", name)
-            return
+            return False
 
         cmd = [
             "roslaunch", launch_file,
@@ -391,13 +744,13 @@ class StackLauncher:
         if extra_args:
             cmd.extend(extra_args)
 
-        self._pm.start(f"{name} 스택", cmd)
+        return self._pm.start(f"{name} 스택", cmd)
 
     def start_gmapping(self):
-        self._start_slam_stack("GMapping", _find_gmapping_launch)
+        return self._start_slam_stack("GMapping", _find_gmapping_launch)
 
     def start_cartographer(self):
-        self._start_slam_stack("Cartographer", _find_cartographer_launch)
+        return self._start_slam_stack("Cartographer", _find_cartographer_launch)
 
     def start_cartographer_localization(self, state_file, mode="nonfix"):
         """Cartographer Localization 모드로 기동한다.
@@ -412,12 +765,12 @@ class StackLauncher:
             rospy.logerr("  SLAM으로 맵을 먼저 생성하세요:")
             rospy.logerr("    1. roslaunch woosh_slam_cartographer cartographer.launch")
             rospy.logerr("    2. roslaunch woosh_slam_cartographer save_state.launch map_name:=my_map")
-            return
+            return False
 
         launch_file = _find_cartographer_localization_launch()
         if launch_file is None:
             rospy.logwarn("cartographer_localization.launch 파일을 찾을 수 없습니다.")
-            return
+            return False
 
         localization_mode = "fix" if mode == "fix" else "nonfix"
         cmd = [
@@ -431,8 +784,47 @@ class StackLauncher:
         ]
 
         stack_label = "Cartographer Localization (fix)" if mode == "fix" else "Cartographer Localization (nonfix)"
-        self._pm.start(f"{stack_label} 스택", cmd)
-        rospy.loginfo("Cartographer Localization 시작 [mode=%s] (state_file=%s)", mode, state_file)
+        started = self._pm.start(f"{stack_label} 스택", cmd)
+        if started:
+            rospy.loginfo("Cartographer Localization 시작 [mode=%s] (state_file=%s)", mode, state_file)
+        return started
+
+    # -- move_base --
+
+    def start_move_base(self):
+        """move_base 스택을 기동한다 (global/local costmap + navfn + DWA).
+
+        sensor_bridge, map_server, localization이 이미 실행 중이어야 한다.
+        """
+        launch_file = _find_move_base_only_launch()
+        if launch_file is None:
+            rospy.logwarn("move_base_only.launch 파일을 찾을 수 없습니다. move_base를 시작하지 않습니다.")
+            return False
+        started = self._pm.start("move_base 스택", ["roslaunch", launch_file], startup_grace_sec=2.0)
+        if started:
+            rospy.loginfo("move_base 스택 시작 (navfn + DWA + global/local costmap)")
+        return started
+
+    # -- cmd_vel 어댑터 --
+
+    def start_cmd_vel_adapter(self):
+        """cmd_vel_adapter를 기동한다 (move_base /cmd_vel → Woosh SDK).
+
+        move_base가 발행하는 /cmd_vel을 로봇 SDK로 전달하기 위해 필요하다.
+        """
+        launch_file = _find_cmd_vel_adapter_launch()
+        if launch_file is None:
+            rospy.logwarn("cmd_vel_adapter.launch 파일을 찾을 수 없습니다. /cmd_vel이 로봇에 전달되지 않습니다.")
+            return False
+        cmd = [
+            "roslaunch", launch_file,
+            f"robot_ip:={self.robot_ip}",
+            f"robot_port:={self.robot_port}",
+        ]
+        started = self._pm.start("cmd_vel 어댑터", cmd)
+        if started:
+            rospy.loginfo("cmd_vel 어댑터 시작 (move_base /cmd_vel → Woosh SDK)")
+        return started
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +883,25 @@ class SmoothTwistController:
         self.selected_map_name = None   # 선택된 맵 이름 (확장자 없음)
         self.selected_map_source = None # "robot" 또는 "local"
         self.map_ready_event = Event()  # 맵 선택 완료 시그널
+
+        # /odom 기반 실제 이동 거리 피드백
+        self._odom_lock = Lock()
+        self._odom_pose = None  # (x, y) | None — woosh_sensor_bridge가 발행한 최신 odom 위치
+        self._odom_sub = rospy.Subscriber("/odom", Odometry, self._odom_callback, queue_size=5)
+
+    # -- odom 콜백 --
+
+    def _odom_callback(self, msg):
+        """woosh_sensor_bridge가 발행하는 /odom을 수신해 최신 위치를 저장한다.
+
+        ROS 콜백 스레드에서 호출되므로 Lock으로 보호한다.
+        navigation 스택도 이 토픽을 동일하게 소비하므로 별도 처리 없이 공유된다.
+        """
+        with self._odom_lock:
+            self._odom_pose = (
+                msg.pose.pose.position.x,
+                msg.pose.pose.position.y,
+            )
 
     # -- 연결 / 초기화 --
 
@@ -708,6 +1119,16 @@ class SmoothTwistController:
         abs_distance = abs(distance)
         total_time = self._calculate_motion_time(abs_distance)
 
+        # 이동 시작 시 odom 위치 스냅샷 (없으면 None → 속도 적분 폴백)
+        with self._odom_lock:
+            odom_start = self._odom_pose  # (x, y) or None
+
+        if odom_start is not None:
+            rospy.loginfo("[Quintic] odom 피드백 활성화 (시작 위치: x=%.3f, y=%.3f)",
+                          odom_start[0], odom_start[1])
+        else:
+            rospy.logwarn("[Quintic] /odom 미수신 — 속도 적분 폴백으로 이동 거리 추정")
+
         rospy.loginfo("=" * 50)
         rospy.loginfo("[Quintic] 이동 시작: %+.3fm (%s), 예상 %.2fs",
                       distance, "전진" if direction > 0 else "후진", total_time)
@@ -717,6 +1138,7 @@ class SmoothTwistController:
         start_time = loop.time()
         last_time = start_time
         last_log_time = start_time
+        cmd_integrated = 0.0  # 속도 적분 누적 (odom 불가 시 폴백용)
 
         while self.is_moving:
             now = loop.time()
@@ -742,11 +1164,22 @@ class SmoothTwistController:
                 self.is_moving = False
 
             await self._send_twist(self.current_speed)
-            self.estimated_distance += self.current_speed * dt
+            cmd_integrated += self.current_speed * dt
+
+            # 실제 이동 거리: odom 우선, 없으면 속도 적분 폴백
+            with self._odom_lock:
+                current_odom = self._odom_pose
+            if odom_start is not None and current_odom is not None:
+                dx = current_odom[0] - odom_start[0]
+                dy = current_odom[1] - odom_start[1]
+                self.estimated_distance = direction * math.sqrt(dx * dx + dy * dy)
+            else:
+                self.estimated_distance = cmd_integrated
 
             if now - last_log_time >= 0.5:
-                rospy.loginfo("[진행] tau=%.2f, v=%+.3fm/s, d=%+.3fm",
-                              tau, self.current_speed, self.estimated_distance)
+                src = "odom" if (odom_start is not None and current_odom is not None) else "추정"
+                rospy.loginfo("[진행] tau=%.2f, v=%+.3fm/s, d=%+.3fm [%s]",
+                              tau, self.current_speed, self.estimated_distance, src)
                 last_log_time = now
 
             await asyncio.sleep(period)
@@ -759,10 +1192,11 @@ class SmoothTwistController:
         self.is_moving = False
 
         error = self.estimated_distance - distance
-        rospy.loginfo("[Quintic] 완료: 목표=%+.3fm, 추정=%+.3fm, 오차=%.1fmm",
-                      distance, self.estimated_distance, abs(error) * 1000)
+        src = "odom" if odom_start is not None else "추정"
+        rospy.loginfo("[Quintic] 완료: 목표=%+.3fm, 실제=%+.3fm [%s], 오차=%.1fmm",
+                      distance, self.estimated_distance, src, abs(error) * 1000)
 
-        return True, f"완료: {self.estimated_distance:+.3f}m (오차: {error*1000:+.1f}mm)"
+        return True, f"완료: {self.estimated_distance:+.3f}m [%s] (오차: {error*1000:+.1f}mm)" % src
 
     # -- 메인 루프 --
 
@@ -802,12 +1236,15 @@ def service_handler(req):
 
 
 def _parse_cli_args(argv):
-    """`rviz_on` / `amcl` / `gmap` / `carto_map` / `carto_loc_fix` / `carto_loc_nonfix` 플래그를 분리하고 나머지는 ROS argv로 유지."""
+    """`rviz_on` / `amcl` / `gmap` / `carto_map` / `carto_loc_fix` / `carto_loc_nonfix` / `nav_on` 플래그를 분리하고 나머지는 ROS argv로 유지."""
     flags = {
         "rviz": False, "amcl": False, "gmap": False,
         "carto_map": False,
         "carto_loc_fix": False,    # 고정 맵 localization (AMCL 유사)
         "carto_loc_nonfix": False, # 서브맵 업데이트 포함 localization
+        "nav_on": False,           # localization 연동 Global Costmap (costmap_2d standalone)
+        "move_base_on": False,     # move_base 자율 내비게이션 (navfn + DWA + cmd_vel_adapter)
+        "legacy_costmap": False,   # 구버전 별칭
     }
     map_file = None
     state_file = None
@@ -820,12 +1257,18 @@ def _parse_cli_args(argv):
         "carto_map": "carto_map", "--carto_map": "carto_map",
         "carto_loc_fix": "carto_loc_fix", "--carto_loc_fix": "carto_loc_fix",
         "carto_loc_nonfix": "carto_loc_nonfix", "--carto_loc_nonfix": "carto_loc_nonfix",
+        "nav_on": "nav_on", "--nav_on": "nav_on",
+        "move_base_on": "move_base_on", "--move_base_on": "move_base_on",
+        "costmap": "legacy_costmap", "--costmap": "legacy_costmap",
     }
 
     for arg in argv[1:]:
         key = arg.lower()
         if key in FLAG_MAP:
-            flags[FLAG_MAP[key]] = True
+            flag_name = FLAG_MAP[key]
+            flags[flag_name] = True
+            if flag_name == "legacy_costmap":
+                flags["nav_on"] = True
             if key in ("amcl", "--amcl"):
                 flags["rviz"] = True
             continue
@@ -838,6 +1281,95 @@ def _parse_cli_args(argv):
         filtered.append(arg)
 
     return flags, map_file, state_file, filtered
+
+
+def _get_selected_localizations(flags):
+    return [
+        name for name in ("amcl", "carto_loc_fix", "carto_loc_nonfix")
+        if flags[name]
+    ]
+
+
+def _wait_for_selected_map_name(timeout=30.0):
+    start_time = time.monotonic()
+    ctrl = None
+
+    while (time.monotonic() - start_time) < min(timeout, 5.0):
+        if controller is not None:
+            ctrl = controller
+            break
+        if rospy.is_shutdown():
+            return None
+        time.sleep(0.05)
+
+    if ctrl is None:
+        rospy.logwarn("컨트롤러 초기화 대기 타임아웃. 기본 경로를 사용합니다.")
+        return None
+
+    remaining = max(timeout - (time.monotonic() - start_time), 0.0)
+    rospy.loginfo("맵 선택 완료 대기 중... (최대 %.0f초)", remaining)
+    if not ctrl.map_ready_event.wait(timeout=remaining):
+        rospy.logwarn("맵 선택 대기 타임아웃. 기본 경로를 사용합니다.")
+        return None
+
+    return ctrl.selected_map_name
+
+
+def _resolve_map_file(cli_map_file, purpose_label="맵"):
+    if cli_map_file:
+        return cli_map_file
+
+    selected_map_name = _wait_for_selected_map_name()
+    if selected_map_name:
+        found = _find_yaml_for_map(selected_map_name)
+        if found:
+            rospy.loginfo("선택된 맵 '%s'에 대응하는 .yaml 파일 발견 (%s): %s",
+                          selected_map_name, purpose_label, found)
+            return found
+        rospy.logwarn("선택된 맵 '%s'에 대응하는 .yaml 파일이 없습니다. 기본 경로 사용 (%s)",
+                      selected_map_name, purpose_label)
+    else:
+        rospy.logwarn("선택된 맵을 확인하지 못했습니다. 기본 경로 사용 (%s)", purpose_label)
+
+    return rospy.get_param("~map_file", DEFAULT_MAP_FILE)
+
+
+def _resolve_state_file(cli_state_file):
+    if cli_state_file:
+        return cli_state_file
+
+    selected_map_name = _wait_for_selected_map_name()
+    if selected_map_name:
+        found = _find_pbstream_for_map(selected_map_name)
+        if found:
+            rospy.loginfo("선택된 맵 '%s'에 대응하는 .pbstream 파일 발견: %s",
+                          selected_map_name, found)
+            return found
+        rospy.logwarn("선택된 맵 '%s'에 대응하는 .pbstream 파일이 없습니다. 기본 경로 사용",
+                      selected_map_name)
+    else:
+        rospy.logwarn("선택된 맵을 확인하지 못했습니다. 기본 state_file 경로 사용")
+
+    return rospy.get_param("~state_file", DEFAULT_CARTO_STATE_FILE)
+
+
+def _resolve_nav_map_file(localization_mode, cli_map_file, resolved_amcl_map=None, resolved_state_file=None):
+    if localization_mode == "amcl":
+        return resolved_amcl_map or _resolve_map_file(cli_map_file, purpose_label="nav_on")
+
+    if cli_map_file:
+        return cli_map_file
+
+    if resolved_state_file:
+        derived_map = _find_yaml_for_state_file(resolved_state_file)
+        if derived_map:
+            rospy.loginfo("선택된 state_file에 대응하는 .yaml 파일 발견 (nav_on): %s", derived_map)
+            return derived_map
+
+    if localization_mode == "carto_loc_fix":
+        return _resolve_map_file(None, purpose_label="carto_loc_fix + nav_on")
+
+    return rospy.get_param("~map_file", DEFAULT_MAP_FILE)
 
 
 def _run_asyncio():
@@ -865,40 +1397,56 @@ def main():
     rospy.on_shutdown(launcher.shutdown)
     atexit.register(launcher.shutdown)
 
+    selected_localizations = _get_selected_localizations(flags)
+    if len(selected_localizations) > 1:
+        rospy.logerr("localization 모드는 하나만 선택할 수 있습니다: amcl | carto_loc_fix | carto_loc_nonfix")
+        return
+
+    localization_mode = selected_localizations[0] if selected_localizations else None
+
+    if flags["legacy_costmap"]:
+        rospy.logwarn("`costmap` 플래그는 더 이상 권장되지 않습니다. `nav_on`을 사용하세요.")
+
+    if flags["nav_on"] and localization_mode is None:
+        rospy.logerr("`nav_on`은 localization 모드와 함께 사용해야 합니다: amcl | carto_loc_fix | carto_loc_nonfix")
+        return
+
+    if flags["nav_on"] and (flags["gmap"] or flags["carto_map"]):
+        rospy.logerr("`nav_on`은 SLAM 모드(gmap, carto_map)와 함께 사용할 수 없습니다.")
+        return
+
+    if flags["move_base_on"] and localization_mode is None:
+        rospy.logerr("`move_base_on`은 localization 모드와 함께 사용해야 합니다: amcl | carto_loc_fix | carto_loc_nonfix")
+        return
+
+    if flags["move_base_on"] and (flags["gmap"] or flags["carto_map"]):
+        rospy.logerr("`move_base_on`은 SLAM 모드(gmap, carto_map)와 함께 사용할 수 없습니다.")
+        return
+
+    if flags["move_base_on"] and flags["nav_on"]:
+        rospy.logwarn("`nav_on`과 `move_base_on`이 동시에 지정됐습니다. `move_base_on`을 우선 적용합니다.")
+        flags["nav_on"] = False
+
     Thread(target=_run_asyncio, daemon=True).start()
     rospy.Service('mobile_move', MoveMobile, service_handler)
 
     # 센서 브릿지는 항상 기동
     launcher.start_sensor_bridge()
 
-    if flags["rviz"]:
-        launcher.start_rviz(use_amcl_rviz=flags["amcl"])
+    manual_rviz_modes = not (flags["gmap"] or flags["carto_map"] or flags["carto_loc_fix"] or flags["carto_loc_nonfix"])
+    if flags["rviz"] and manual_rviz_modes:
+        launcher.start_rviz(
+            use_amcl_rviz=(localization_mode == "amcl"),
+            require_nav_costmap=flags["nav_on"],
+        )
+    elif flags["rviz"]:
+        rospy.loginfo("선택한 스택에서 RViz가 자동 실행되므로 추가 `rviz_on` 요청은 건너뜁니다.")
 
+    resolved_amcl_map = None
+    localization_started = False
     if flags["amcl"]:
-        if map_file:
-            # CLI에서 명시적으로 지정된 경우 그대로 사용
-            resolved_map = map_file
-        else:
-            # _ensure_map_loaded()에서 선택된 맵 이름으로 .yaml 자동 탐색
-            rospy.loginfo("맵 선택 완료 대기 중... (최대 30초)")
-            resolved_map = rospy.get_param(
-                "~map_file", "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml"
-            )
-            if controller is not None and controller.map_ready_event.wait(timeout=30.0):
-                if controller.selected_map_name:
-                    found = _find_yaml_for_map(controller.selected_map_name)
-                    if found:
-                        rospy.loginfo("선택된 맵 '%s'에 대응하는 .yaml 파일 발견: %s",
-                                      controller.selected_map_name, found)
-                        resolved_map = found
-                    else:
-                        rospy.logwarn("선택된 맵 '%s'에 대응하는 .yaml 파일이 없습니다. 기본 경로 사용",
-                                      controller.selected_map_name)
-                else:
-                    rospy.logwarn("맵 선택이 완료되었으나 선택된 맵이 없습니다. 기본 경로 사용")
-            else:
-                rospy.logwarn("맵 선택 대기 타임아웃. 기본 경로 사용")
-        launcher.start_amcl(resolved_map)
+        resolved_amcl_map = _resolve_map_file(map_file, purpose_label="AMCL")
+        localization_started = launcher.start_amcl(resolved_amcl_map)
 
     if flags["gmap"]:
         launcher.start_gmapping()
@@ -906,51 +1454,54 @@ def main():
     if flags["carto_map"]:
         launcher.start_cartographer()
 
+    resolved_state = None
     _carto_loc_mode = None
-    if flags["carto_loc_fix"]:
+    if localization_mode == "carto_loc_fix":
         _carto_loc_mode = "fix"
-    elif flags["carto_loc_nonfix"]:
+    elif localization_mode == "carto_loc_nonfix":
         _carto_loc_mode = "nonfix"
 
     if _carto_loc_mode is not None:
-        if state_file:
-            # CLI에서 명시적으로 지정된 경우 그대로 사용
-            resolved_state = state_file
+        resolved_state = _resolve_state_file(state_file)
+        localization_started = launcher.start_cartographer_localization(resolved_state, mode=_carto_loc_mode)
+
+    if flags["nav_on"] or flags["move_base_on"]:
+        if not localization_started:
+            rospy.logerr("localization 스택이 정상적으로 시작되지 않아 nav 스택을 중단합니다.")
         else:
-            # _ensure_map_loaded()에서 선택된 맵 이름으로 .pbstream 자동 탐색
-            rospy.loginfo("맵 선택 완료 대기 중... (최대 30초)")
-            if controller is not None and controller.map_ready_event.wait(timeout=30.0):
-                if controller.selected_map_name:
-                    resolved_state = _find_pbstream_for_map(controller.selected_map_name)
-                    if resolved_state:
-                        rospy.loginfo("선택된 맵 '%s'에 대응하는 .pbstream 파일 발견: %s",
-                                      controller.selected_map_name, resolved_state)
-                    else:
-                        rospy.logwarn("선택된 맵 '%s'에 대응하는 .pbstream 파일이 없습니다. 기본 경로 사용",
-                                      controller.selected_map_name)
-                        resolved_state = rospy.get_param(
-                            "~state_file",
-                            "/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.pbstream"
-                        )
-                else:
-                    rospy.logwarn("맵 선택이 완료되었으나 선택된 맵이 없습니다. 기본 경로 사용")
-                    resolved_state = rospy.get_param(
-                        "~state_file",
-                        "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_cartographer_map.pbstream"
-                    )
+            nav_prereq_ok = launcher.wait_for_nav_prerequisites(localization_mode)
+            if not nav_prereq_ok:
+                rospy.logwarn("nav 필수 준비 신호가 완전히 확인되지 않았지만 기동을 시도합니다.")
+
+            if flags["move_base_on"]:
+                # move_base 모드: global/local costmap + navfn + DWA 포함
+                # cmd_vel_adapter: move_base /cmd_vel → Woosh SDK 전달
+                rospy.loginfo("move_base_on 요청 감지 — localization=%s", localization_mode)
+                launcher.start_cmd_vel_adapter()
+                launcher.start_move_base()
             else:
-                rospy.logwarn("맵 선택 대기 타임아웃. 기본 경로 사용")
-                resolved_state = rospy.get_param(
-                    "~state_file",
-                    "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_cartographer_map.pbstream"
-                )
-        launcher.start_cartographer_localization(resolved_state, mode=_carto_loc_mode)
+                # nav_on 모드: standalone Global Costmap (costmap_2d_node)
+                # carto_loc_nonfix: Cartographer 확률 맵(/carto_map)은 낮은 확률값으로
+                # 내부 벽이 costmap에서 FREE 처리됨 → map_server 정적 pgm으로 대체
+                launch_map_server = localization_mode in ("carto_loc_fix", "carto_loc_nonfix")
+                costmap_map = _resolve_nav_map_file(localization_mode, map_file,
+                                                    resolved_amcl_map=resolved_amcl_map,
+                                                    resolved_state_file=resolved_state)
+                rospy.loginfo("nav_on 요청 감지 — localization=%s, costmap map_server=%s",
+                              localization_mode, "on" if launch_map_server else "off")
+                costmap_started = launcher.start_costmap(costmap_map, launch_map_server=launch_map_server,
+                                                         launch_map_odom_tf=False,
+                                                         launch_base_laser_tf=False)
+                if costmap_started:
+                    launcher.wait_for_costmap_ready(localization_mode=localization_mode)
 
     rospy.loginfo("서버 시작됨! (Quintic Minimum Jerk 정밀 제어)")
     rospy.loginfo("  rosservice call /mobile_move \"{distance: 0.3}\"")
     rospy.loginfo("  옵션: rviz_on | amcl [map_file:=...] | gmap | carto_map")
     rospy.loginfo("         carto_loc_fix [state_file:=...]      — 고정 맵 localization (AMCL 유사)")
     rospy.loginfo("         carto_loc_nonfix [state_file:=...]   — 서브맵 업데이트 + pose 보정")
+    rospy.loginfo("         nav_on [map_file:=...]               — localization + Global Costmap (costmap_2d standalone)")
+    rospy.loginfo("         move_base_on [map_file:=...]         — localization + move_base 자율 내비게이션 (navfn + DWA)")
     rospy.spin()
 
 
