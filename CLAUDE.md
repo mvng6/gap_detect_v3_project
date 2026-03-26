@@ -189,6 +189,9 @@ The driver accepts CLI flags to launch additional stacks alongside the `/mobile_
 | `carto_loc_fix` | `rosrun woosh_bringup woosh_service_driver.py carto_loc_fix` | + Cartographer localization (fixed map, AMCL-like) |
 | `carto_loc_nonfix` | `rosrun woosh_bringup woosh_service_driver.py carto_loc_nonfix` | + Cartographer localization (submap updates) |
 | `amcl` | `rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/path/to/map.yaml` | + AMCL localization (requires map file) |
+| `amcl nav_on` | `rosrun woosh_bringup woosh_service_driver.py amcl nav_on map_file:=...` | + AMCL + Global Costmap standalone (costmap_2d_node) |
+| `amcl move_base_on` | `rosrun woosh_bringup woosh_service_driver.py amcl move_base_on map_file:=...` | + AMCL + move_base 자율 내비게이션 (navfn + DWA + cmd_vel_adapter) |
+| `carto_loc_fix move_base_on` | `rosrun woosh_bringup woosh_service_driver.py carto_loc_fix move_base_on state_file:=...` | + Cartographer(fixed) + move_base 자율 내비게이션 |
 
 ### Key Source Files
 

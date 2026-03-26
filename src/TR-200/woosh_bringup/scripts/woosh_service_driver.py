@@ -16,7 +16,7 @@ from queue import Queue, Empty
 from threading import Thread, Event, Lock
 
 import tf2_ros
-from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped, Twist as RosTwist
 from nav_msgs.msg import Odometry, OccupancyGrid
 from sensor_msgs.msg import LaserScan
 
@@ -889,6 +889,16 @@ class SmoothTwistController:
         self._odom_pose = None  # (x, y) | None — woosh_sensor_bridge가 발행한 최신 odom 위치
         self._odom_sub = rospy.Subscriber("/odom", Odometry, self._odom_callback, queue_size=5)
 
+        # cmd_vel 패스스루 (move_base_on 모드) — 별도 WebSocket 연결 없이 기존 연결 재사용
+        self._cmd_vel_enabled = False
+        self._cmd_vel_queue = Queue(maxsize=1)
+        self._cmd_vel_lock = Lock()
+        self._cmd_vel_last_time = None
+        self._cmd_vel_last_linear = 0.0
+        self._cmd_vel_last_angular = 0.0
+        self._cmd_vel_watchdog_timeout = 1.0
+        self._cmd_vel_sub = None   # enable_cmd_vel_passthrough() 호출 시 생성
+
     # -- odom 콜백 --
 
     def _odom_callback(self, msg):
@@ -1100,8 +1110,48 @@ class SmoothTwistController:
         total_time = self.QUINTIC_PEAK_VELOCITY_RATIO * abs_distance / self.max_speed
         return np.clip(total_time, 0.3, 30.0)
 
-    async def _send_twist(self, linear=0.0):
-        await self.robot.twist_req(Twist(linear=linear, angular=0.0), NO_PRINT, NO_PRINT)
+    async def _send_twist(self, linear=0.0, angular=0.0):
+        await self.robot.twist_req(Twist(linear=linear, angular=angular), NO_PRINT, NO_PRINT)
+
+    # -- cmd_vel 패스스루 (move_base_on 모드) --
+
+    def _cmd_vel_callback(self, msg):
+        """move_base가 발행하는 /cmd_vel 을 수신해 큐에 넣는다.
+
+        ROS 콜백 스레드에서 호출된다. asyncio 루프는 큐를 폴링한다.
+        """
+        linear = max(-self.max_speed, min(self.max_speed, float(msg.linear.x)))
+        angular = max(-0.5, min(0.5, float(msg.angular.z)))
+        with self._cmd_vel_lock:
+            self._cmd_vel_last_time = time.monotonic()
+            self._cmd_vel_last_linear = linear
+            self._cmd_vel_last_angular = angular
+        # 큐가 꽉 찼으면 기존 값 버리고 최신으로 교체
+        try:
+            self._cmd_vel_queue.get_nowait()
+        except Empty:
+            pass
+        try:
+            self._cmd_vel_queue.put_nowait((linear, angular))
+        except Exception:
+            pass
+
+    def enable_cmd_vel_passthrough(self, watchdog_timeout=1.0):
+        """cmd_vel 패스스루 모드를 활성화한다 (move_base_on 전용).
+
+        cmd_vel_adapter 서브프로세스 대신 기존 WebSocket 연결을 재사용하여
+        SmoothTwistController + CmdVelAdapter 동시 연결 충돌을 방지한다.
+        """
+        self._cmd_vel_watchdog_timeout = watchdog_timeout
+        self._cmd_vel_sub = rospy.Subscriber(
+            "/cmd_vel", RosTwist, self._cmd_vel_callback, queue_size=1
+        )
+        self._cmd_vel_enabled = True
+        rospy.loginfo(
+            "[SmoothTwistController] cmd_vel 패스스루 활성화 — "
+            "move_base /cmd_vel → 기존 WebSocket 경유 전송 (watchdog: %.1fs)",
+            watchdog_timeout,
+        )
 
     async def _move_exact_distance(self, distance):
         if abs(distance) < 0.005:
@@ -1201,15 +1251,58 @@ class SmoothTwistController:
     # -- 메인 루프 --
 
     async def _control_loop(self):
+        period_idle = 0.01          # /mobile_move 대기 루프 간격
+        period_cmdvel = 1.0 / 20.0  # cmd_vel 패스스루 루프 간격 (20 Hz)
+        _watchdog_fired = False
+
         while True:
+            # ── /mobile_move 거리 명령 우선 처리 ────────────────────────────
             try:
                 distance = self.command_queue.get_nowait()
+                success, msg = await self._move_exact_distance(distance)
+                self.result_queue.put((success, msg))
+                continue
             except Empty:
-                await asyncio.sleep(0.01)
+                pass
+
+            # ── cmd_vel 패스스루 (move_base_on 모드) ─────────────────────────
+            if not self._cmd_vel_enabled:
+                await asyncio.sleep(period_idle)
                 continue
 
-            success, msg = await self._move_exact_distance(distance)
-            self.result_queue.put((success, msg))
+            linear, angular = 0.0, 0.0
+            got_cmd = False
+            try:
+                linear, angular = self._cmd_vel_queue.get_nowait()
+                got_cmd = True
+            except Empty:
+                pass
+
+            with self._cmd_vel_lock:
+                last_time = self._cmd_vel_last_time
+                if not got_cmd:
+                    linear = self._cmd_vel_last_linear
+                    angular = self._cmd_vel_last_angular
+
+            if last_time is None:
+                # 아직 /cmd_vel 수신 없음 — 대기
+                await asyncio.sleep(period_cmdvel)
+                continue
+
+            elapsed = time.monotonic() - last_time
+            if elapsed >= self._cmd_vel_watchdog_timeout:
+                if not _watchdog_fired:
+                    rospy.logwarn(
+                        "[SmoothTwistController] /cmd_vel %.1f초 미수신 — 자동 정지",
+                        self._cmd_vel_watchdog_timeout,
+                    )
+                    _watchdog_fired = True
+                linear, angular = 0.0, 0.0
+            else:
+                _watchdog_fired = False
+
+            await self._send_twist(linear, angular)
+            await asyncio.sleep(period_cmdvel)
 
     async def run(self):
         await self.connect()
@@ -1475,9 +1568,19 @@ def main():
 
             if flags["move_base_on"]:
                 # move_base 모드: global/local costmap + navfn + DWA 포함
-                # cmd_vel_adapter: move_base /cmd_vel → Woosh SDK 전달
+                # cmd_vel_adapter 서브프로세스 대신 SmoothTwistController의 패스스루 기능을 사용한다.
+                # → 별도 WebSocket 연결 생성 없이 기존 연결 재사용 (이중 연결 충돌 방지)
                 rospy.loginfo("move_base_on 요청 감지 — localization=%s", localization_mode)
-                launcher.start_cmd_vel_adapter()
+                _t = time.monotonic()
+                while controller is None and (time.monotonic() - _t) < 10.0:
+                    time.sleep(0.1)
+                if controller is not None:
+                    controller.enable_cmd_vel_passthrough()
+                else:
+                    rospy.logwarn(
+                        "SmoothTwistController 초기화 대기 타임아웃 — "
+                        "cmd_vel 패스스루 비활성 (move_base /cmd_vel이 로봇에 전달되지 않습니다)"
+                    )
                 launcher.start_move_base()
             else:
                 # nav_on 모드: standalone Global Costmap (costmap_2d_node)
