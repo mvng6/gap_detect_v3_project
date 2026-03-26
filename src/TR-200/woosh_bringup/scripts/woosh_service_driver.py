@@ -899,6 +899,9 @@ class SmoothTwistController:
         self._cmd_vel_watchdog_timeout = 1.0
         self._cmd_vel_sub = None   # enable_cmd_vel_passthrough() 호출 시 생성
 
+        # 비블로킹 twist 전송 태스크 추적 (WebSocket RTT 블로킹 방지용)
+        self._pending_send_task = None
+
     # -- odom 콜백 --
 
     def _odom_callback(self, msg):
@@ -1113,6 +1116,19 @@ class SmoothTwistController:
     async def _send_twist(self, linear=0.0, angular=0.0):
         await self.robot.twist_req(Twist(linear=linear, angular=angular), NO_PRINT, NO_PRINT)
 
+    def _fire_twist(self, linear=0.0, angular=0.0):
+        """twist_req를 백그라운드 asyncio 태스크로 발행한다.
+
+        await 없이 호출하므로 WebSocket RTT(~100ms)가 제어 루프 주기에 영향을 주지 않는다.
+        이전 태스크가 아직 완료되지 않았으면 취소 후 최신 명령으로 교체한다(최신 명령 우선).
+        정지 명령 등 완료를 보장해야 하는 경우에는 _send_twist(await)를 직접 사용한다.
+        """
+        if self._pending_send_task is not None and not self._pending_send_task.done():
+            self._pending_send_task.cancel()
+        self._pending_send_task = asyncio.ensure_future(
+            self.robot.twist_req(Twist(linear=linear, angular=angular), NO_PRINT, NO_PRINT)
+        )
+
     # -- cmd_vel 패스스루 (move_base_on 모드) --
 
     def _cmd_vel_callback(self, msg):
@@ -1213,7 +1229,7 @@ class SmoothTwistController:
                 self.current_speed = 0.0
                 self.is_moving = False
 
-            await self._send_twist(self.current_speed)
+            self._fire_twist(self.current_speed)   # 비블로킹: WebSocket RTT가 루프 주기에 영향 없음
             cmd_integrated += self.current_speed * dt
 
             # 실제 이동 거리: odom 우선, 없으면 속도 적분 폴백
@@ -1301,7 +1317,7 @@ class SmoothTwistController:
             else:
                 _watchdog_fired = False
 
-            await self._send_twist(linear, angular)
+            self._fire_twist(linear, angular)   # 비블로킹: WebSocket RTT가 루프 주기에 영향 없음
             await asyncio.sleep(period_cmdvel)
 
     async def run(self):
