@@ -1,9 +1,12 @@
 <?xml version="1.0"?>
 <!--
   cmd_vel_adapter.launch — /cmd_vel → Woosh SDK twist_req() 어댑터 단독 실행용
+  DEPRECATED: 기본값으로는 direct SDK 연결을 차단한다.
 
-  사용 예:
-    roslaunch woosh_bringup cmd_vel_adapter.launch robot_ip:=169.254.128.2
+  legacy opt-in 예:
+    roslaunch woosh_bringup cmd_vel_adapter.launch \
+      robot_ip:=169.254.128.2 \
+      allow_legacy_cmd_vel_adapter:=true
 
   검증:
     rostopic pub /cmd_vel geometry_msgs/Twist "linear: {x: 0.05}" -r 10
@@ -22,6 +25,7 @@
   <arg name="watchdog_timeout"  default="1.0" />
 
   <arg name="control_hz"        default="20.0" />
+  <arg name="allow_legacy_cmd_vel_adapter" default="false" />
 
   <node pkg="woosh_bringup"
         type="cmd_vel_adapter.py"
@@ -34,5 +38,6 @@
     <param name="max_angular"      value="$(arg max_angular)" />
     <param name="watchdog_timeout" value="$(arg watchdog_timeout)" />
     <param name="control_hz"       value="$(arg control_hz)" />
+    <param name="allow_legacy_cmd_vel_adapter" value="$(arg allow_legacy_cmd_vel_adapter)" />
   </node>
 </launch>

@@ -106,7 +106,7 @@
     <rosparam file="$(find woosh_navigation_mb)/config/local_planner_params.yaml"
               command="load" />
 
-    <!-- cmd_vel → Woosh SDK (cmd_vel_adapter가 없을 때 직접 연결 시 remap) -->
+    <!-- /cmd_vel은 woosh_service_driver.py의 SmoothTwistController passthrough가 소비한다. -->
     <!-- <remap from="cmd_vel" to="/cmd_vel" /> -->
   </node>
 

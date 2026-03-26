@@ -17,7 +17,7 @@ from queue import Queue, Empty
 from threading import Thread, Event, Lock
 
 import tf2_ros
-from geometry_msgs.msg import PoseWithCovarianceStamped, Twist as RosTwist
+from geometry_msgs.msg import PoseWithCovarianceStamped, Quaternion, TransformStamped, Twist as RosTwist
 from nav_msgs.msg import Odometry, OccupancyGrid
 from sensor_msgs.msg import LaserScan
 
@@ -29,24 +29,49 @@ if woosh_robot_dir not in sys.path:
     sys.path.insert(0, woosh_robot_dir)
 
 try:
-    from woosh_utils import print_battery_status
+    from woosh_utils import (
+        clear_registered_sdk_owner,
+        current_process_is_registered_owner,
+        inspect_tcp_connections,
+        log_sdk_owner,
+        parse_connection_owners,
+        print_battery_status,
+        register_sdk_owner,
+    )
 except ImportError:
     woosh_utils_src_dir = os.path.abspath(os.path.join(script_dir, "../../woosh_utils/src"))
     if woosh_utils_src_dir not in sys.path:
         sys.path.insert(0, woosh_utils_src_dir)
-    from woosh_utils import print_battery_status
+    from woosh_utils import (
+        clear_registered_sdk_owner,
+        current_process_is_registered_owner,
+        inspect_tcp_connections,
+        log_sdk_owner,
+        parse_connection_owners,
+        print_battery_status,
+        register_sdk_owner,
+    )
 
 from woosh_msgs.srv import MoveMobile, MoveMobileResponse
 from woosh_robot import WooshRobot
-from woosh_interface import CommuSettings, NO_PRINT, FULL_PRINT
+from woosh_interface import CommuSettings, NO_PRINT
 from woosh.proto.robot.robot_pack_pb2 import Twist, SwitchMap, SetRobotPose, InitRobot, SwitchControlMode
-from woosh.proto.robot.robot_pb2 import RobotInfo, PoseSpeed, OperationState
+from woosh.proto.robot.robot_pb2 import RobotInfo, PoseSpeed, OperationState, ScannerData
 from woosh.proto.map.map_pack_pb2 import SceneList
 from woosh.proto.util.robot_pb2 import ControlMode
 
 
 DEFAULT_MAP_FILE = "/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml"
 DEFAULT_CARTO_STATE_FILE = "/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.pbstream"
+
+
+def _yaw_to_quaternion(yaw):
+    return Quaternion(
+        x=0.0,
+        y=0.0,
+        z=math.sin(yaw * 0.5),
+        w=math.cos(yaw * 0.5),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -85,20 +110,6 @@ def _resolve_file(*candidates, rospkg_fallback=None):
             pass
 
     return None
-
-
-def _find_debug_script():
-    return _resolve_file(
-        os.path.join(script_dir, "woosh_rviz_debug.py"),
-        os.path.join(_find_package_dir(), "scripts", "woosh_rviz_debug.py"),
-    )
-
-
-def _find_sensor_bridge_script():
-    return _resolve_file(
-        os.path.abspath(os.path.join(script_dir, "../../woosh_sensor_bridge/scripts/woosh_sensor_bridge.py")),
-        rospkg_fallback=("woosh_sensor_bridge", os.path.join("scripts", "woosh_sensor_bridge.py")),
-    )
 
 
 def _find_rviz_config():
@@ -270,13 +281,6 @@ def _find_move_base_only_launch():
     return _resolve_file(
         os.path.abspath(os.path.join(script_dir, "../../woosh_navigation/MoveBase/woosh_navigation_mb/launch/move_base_only.launch")),
         rospkg_fallback=("woosh_navigation_mb", os.path.join("launch", "move_base_only.launch")),
-    )
-
-
-def _find_cmd_vel_adapter_launch():
-    return _resolve_file(
-        os.path.abspath(os.path.join(script_dir, "../launch/cmd_vel_adapter.launch")),
-        rospkg_fallback=("woosh_bringup", os.path.join("launch", "cmd_vel_adapter.launch")),
     )
 
 
@@ -511,17 +515,11 @@ class StackLauncher:
     # -- 센서 브릿지 --
 
     def start_sensor_bridge(self):
-        bridge_script = _find_sensor_bridge_script()
-        if bridge_script is None:
-            rospy.logwarn("woosh_sensor_bridge.py를 찾을 수 없습니다. /scan이 발행되지 않습니다.")
-            return False
-        return self._pm.start("센서 브릿지", [
-            sys.executable, bridge_script,
-            f"_robot_ip:={self.robot_ip}",
-            f"_robot_port:={self.robot_port}",
-            "_robot_identity:=service_bridge",
-            "_publish_hz:=10.0",
-        ])
+        rospy.loginfo(
+            "외부 센서 브릿지 서브프로세스는 비활성화되었습니다. "
+            "SmoothTwistController가 /scan, /odom, /odom_raw, TF를 직접 발행합니다."
+        )
+        return True
 
     def wait_for_nav_prerequisites(self, localization_mode, timeout=20.0):
         """nav_on 시작 전 필수 토픽/TF가 준비될 때까지 잠시 대기한다."""
@@ -610,7 +608,6 @@ class StackLauncher:
     # -- RViz --
 
     def start_rviz(self, use_amcl_rviz=False, require_nav_costmap=False):
-        debug_script = _find_debug_script()
         rviz_bin = _find_rviz_binary()
 
         if use_amcl_rviz:
@@ -637,9 +634,6 @@ class StackLauncher:
                         "amcl_debug.rviz에 costmap 표시가 없고 대체 RViz 설정도 찾지 못했습니다."
                     )
 
-        if not debug_script:
-            rospy.logwarn("`woosh_rviz_debug.py`를 찾지 못해 RViz 지원을 시작하지 않습니다.")
-            return False
         if not rviz_config:
             rospy.logwarn("RViz 설정 파일(%s)을 찾지 못해 RViz 지원을 시작하지 않습니다.", config_label)
             return False
@@ -647,16 +641,18 @@ class StackLauncher:
             rospy.logwarn("`rviz` 실행 파일을 찾지 못했습니다. `rviz_on` 요청은 건너뜁니다.")
             return False
 
-        debug_ok = self._pm.start("RViz 디버그 노드", [
-            sys.executable, debug_script,
-            f"_robot_ip:={self.robot_ip}",
-            f"_robot_port:={self.robot_port}",
-            "_robot_identity:=rviz_debug",
-        ])
         rviz_ok = self._pm.start("RViz", [rviz_bin, "-d", rviz_config])
-        if debug_ok and rviz_ok:
-            rospy.loginfo("RViz 디버그 창 시작 (설정: %s)", config_label)
-        return debug_ok and rviz_ok
+        if rviz_ok:
+            if not use_amcl_rviz:
+                rospy.logwarn(
+                    "woosh_rviz_debug.py direct SDK bridge는 single-owner 정책으로 비활성화되었습니다. "
+                    "woosh_rviz_debug.rviz의 /woosh_debug/* 디스플레이는 비어 있을 수 있습니다."
+                )
+            rospy.loginfo(
+                "RViz 시작 (설정: %s, SDK direct debug bridge 비활성화 — single-owner 정책)",
+                config_label,
+            )
+        return rviz_ok
 
     # -- AMCL --
 
@@ -806,28 +802,6 @@ class StackLauncher:
             rospy.loginfo("move_base 스택 시작 (navfn + DWA + global/local costmap)")
         return started
 
-    # -- cmd_vel 어댑터 --
-
-    def start_cmd_vel_adapter(self):
-        """cmd_vel_adapter를 기동한다 (move_base /cmd_vel → Woosh SDK).
-
-        move_base가 발행하는 /cmd_vel을 로봇 SDK로 전달하기 위해 필요하다.
-        """
-        launch_file = _find_cmd_vel_adapter_launch()
-        if launch_file is None:
-            rospy.logwarn("cmd_vel_adapter.launch 파일을 찾을 수 없습니다. /cmd_vel이 로봇에 전달되지 않습니다.")
-            return False
-        cmd = [
-            "roslaunch", launch_file,
-            f"robot_ip:={self.robot_ip}",
-            f"robot_port:={self.robot_port}",
-        ]
-        started = self._pm.start("cmd_vel 어댑터", cmd)
-        if started:
-            rospy.loginfo("cmd_vel 어댑터 시작 (move_base /cmd_vel → Woosh SDK)")
-        return started
-
-
 # ---------------------------------------------------------------------------
 # Navigation 명령 속도 CSV 로거
 # ---------------------------------------------------------------------------
@@ -936,18 +910,33 @@ def quintic_minimum_jerk_profile(tau):
 class SmoothTwistController:
     # Quintic 프로파일의 최대 속도 계수 (tau=0.5)
     QUINTIC_PEAK_VELOCITY_RATIO = 1.875
+    OWNER_NAME = "SmoothTwistController"
+    CALLER_NAME = "woosh_service_driver.py:SmoothTwistController"
 
     def __init__(self):
         self.robot_ip = rospy.get_param('~robot_ip', '169.254.128.2')
         self.robot_port = rospy.get_param('~robot_port', 5480)
         self.robot_identity = rospy.get_param('~robot_identity', 'twist_ctrl')
+        self.odom_frame = rospy.get_param("~odom_frame", "odom")
+        self.base_frame = rospy.get_param("~base_frame", "base_link")
+        self.laser_frame = rospy.get_param("~laser_frame", "laser")
+        self.publish_hz = max(1.0, float(rospy.get_param("~publish_hz", 10.0)))
+        self.state_poll_sec = max(0.1, float(rospy.get_param("~state_poll_sec", 0.1)))
+        self.publish_tf = rospy.get_param("~publish_tf", True)
 
         self.robot = None
+        self._owner_record = None
 
         # 제어 파라미터
         self.max_speed = 0.12
         self.accel = 0.25
         self.control_hz = 50
+
+        # startup / readiness
+        self.startup_complete_event = Event()
+        self.sdk_ready_event = Event()
+        self.map_ready_event = Event()
+        self.startup_error = None
 
         # 상태
         self.target_distance = 0.0
@@ -961,12 +950,24 @@ class SmoothTwistController:
         # 맵 선택 결과 (carto_loc 연동용)
         self.selected_map_name = None   # 선택된 맵 이름 (확장자 없음)
         self.selected_map_source = None # "robot" 또는 "local"
-        self.map_ready_event = Event()  # 맵 선택 완료 시그널
 
-        # /odom 기반 실제 이동 거리 피드백
+        # odom / scan 상태 (SDK owner가 직접 발행)
         self._odom_lock = Lock()
-        self._odom_pose = None  # (x, y) | None — woosh_sensor_bridge가 발행한 최신 odom 위치
-        self._odom_sub = rospy.Subscriber("/odom", Odometry, self._odom_callback, queue_size=5)
+        self._odom_pose = None
+        self.latest_scan = None
+        self.latest_pose_speed = None
+        self.odom_x = 0.0
+        self.odom_y = 0.0
+        self.odom_theta = 0.0
+        self.last_twist_time = None
+        self._sdk_pose_initialized = False
+        self._pose_origin_x = 0.0
+        self._pose_origin_y = 0.0
+        self._pose_origin_theta = 0.0
+        self.scan_pub = rospy.Publisher("/scan", LaserScan, queue_size=10)
+        self.odom_raw_pub = rospy.Publisher("/odom_raw", Odometry, queue_size=10)
+        self.odom_pub = rospy.Publisher("/odom", Odometry, queue_size=10)
+        self.tf_broadcaster = tf2_ros.TransformBroadcaster()
 
         # cmd_vel 패스스루 (move_base_on 모드) — 별도 WebSocket 연결 없이 기존 연결 재사용
         self._cmd_vel_enabled = False
@@ -978,40 +979,255 @@ class SmoothTwistController:
         self._cmd_vel_watchdog_timeout = 1.0
         self._cmd_vel_sub = None   # enable_cmd_vel_passthrough() 호출 시 생성
 
-        # 비블로킹 twist 전송 태스크 추적 (WebSocket RTT 블로킹 방지용)
-        self._pending_send_task = None
+        # dedicated latest-wins twist sender
+        self._twist_queue = Queue(maxsize=1)
+        self._shutdown_started = False
 
         # 명령 속도 CSV 로거
         self._csv_logger = NavCsvLogger()
 
-    # -- odom 콜백 --
-
-    def _odom_callback(self, msg):
-        """woosh_sensor_bridge가 발행하는 /odom을 수신해 최신 위치를 저장한다.
-
-        ROS 콜백 스레드에서 호출되므로 Lock으로 보호한다.
-        navigation 스택도 이 토픽을 동일하게 소비하므로 별도 처리 없이 공유된다.
-        """
+    def _update_odom_pose_cache(self):
         with self._odom_lock:
-            self._odom_pose = (
-                msg.pose.pose.position.x,
-                msg.pose.pose.position.y,
+            self._odom_pose = (self.odom_x, self.odom_y)
+
+    # -- 센서 상태 --
+
+    def _on_scan(self, scan):
+        self.latest_scan = scan
+
+    def _on_pose(self, pose_speed):
+        self._update_odom_from_sdk_pose(pose_speed)
+        self.latest_pose_speed = pose_speed
+
+    def _update_odom_from_sdk_pose(self, pose_speed):
+        pose = pose_speed.pose
+        has_valid_pose = not (pose.x == 0.0 and pose.y == 0.0 and pose.theta == 0.0)
+
+        if not has_valid_pose:
+            self._integrate_twist_fallback(pose_speed)
+            return
+
+        if not self._sdk_pose_initialized:
+            self._pose_origin_x = pose.x
+            self._pose_origin_y = pose.y
+            self._pose_origin_theta = pose.theta
+            self._sdk_pose_initialized = True
+            self.odom_x = 0.0
+            self.odom_y = 0.0
+            self.odom_theta = 0.0
+            self._update_odom_pose_cache()
+            rospy.loginfo(
+                "SDK pose 원점 설정: x=%.3f y=%.3f theta=%.3f (rad)",
+                pose.x, pose.y, pose.theta,
             )
+            return
+
+        dx_world = pose.x - self._pose_origin_x
+        dy_world = pose.y - self._pose_origin_y
+        cos_o = math.cos(self._pose_origin_theta)
+        sin_o = math.sin(self._pose_origin_theta)
+
+        self.odom_x = dx_world * cos_o + dy_world * sin_o
+        self.odom_y = -dx_world * sin_o + dy_world * cos_o
+        self.odom_theta = math.atan2(
+            math.sin(pose.theta - self._pose_origin_theta),
+            math.cos(pose.theta - self._pose_origin_theta),
+        )
+        self._update_odom_pose_cache()
+
+    def _integrate_twist_fallback(self, pose_speed):
+        now = rospy.get_time()
+        if self.last_twist_time is None:
+            self.last_twist_time = now
+            return
+
+        dt = now - self.last_twist_time
+        self.last_twist_time = now
+        if dt <= 0.0 or dt > 1.0:
+            return
+
+        linear = pose_speed.twist.linear
+        angular = pose_speed.twist.angular
+        self.odom_x += linear * math.cos(self.odom_theta) * dt
+        self.odom_y += linear * math.sin(self.odom_theta) * dt
+        self.odom_theta += angular * dt
+        self.odom_theta = math.atan2(math.sin(self.odom_theta), math.cos(self.odom_theta))
+        self._update_odom_pose_cache()
+
+    async def _request_pose_once(self):
+        try:
+            pose_speed, ok, _ = await self.robot.robot_pose_speed_req(PoseSpeed(), NO_PRINT, NO_PRINT)
+            if ok and pose_speed:
+                self._update_odom_from_sdk_pose(pose_speed)
+                self.latest_pose_speed = pose_speed
+        except Exception as exc:
+            rospy.logwarn("[SmoothTwistController] PoseSpeed 요청 실패: %s", exc)
+
+    async def _request_scan_once(self):
+        try:
+            scan, ok, _ = await self.robot.scanner_data_req(ScannerData(), NO_PRINT, NO_PRINT)
+            if ok and scan:
+                self.latest_scan = scan
+        except Exception as exc:
+            rospy.logwarn("[SmoothTwistController] ScannerData 요청 실패: %s", exc)
+
+    async def _setup_sensor_stream(self, info):
+        if info.pose_speed:
+            self.latest_pose_speed = info.pose_speed
+            self.last_twist_time = rospy.get_time()
+            self._update_odom_from_sdk_pose(info.pose_speed)
+
+        try:
+            ok = await self.robot.robot_pose_speed_sub(self._on_pose, NO_PRINT)
+            if not ok:
+                rospy.logwarn("[SmoothTwistController] PoseSpeed 구독 등록 실패 — 폴링 폴백 사용")
+        except Exception as exc:
+            rospy.logwarn("[SmoothTwistController] PoseSpeed 구독 예외: %s", exc)
+
+        try:
+            ok = await self.robot.scanner_data_sub(self._on_scan, NO_PRINT)
+            if not ok:
+                rospy.logwarn("[SmoothTwistController] ScannerData 구독 등록 실패 — 폴링 폴백 사용")
+        except Exception as exc:
+            rospy.logwarn("[SmoothTwistController] ScannerData 구독 예외: %s", exc)
+
+        await self._request_pose_once()
+        await self._request_scan_once()
+        self.sdk_ready_event.set()
+
+    def _publish_scan(self):
+        if self.latest_scan is None:
+            return
+
+        scan = self.latest_scan
+        msg = LaserScan()
+        msg.header.stamp = rospy.Time.now()
+        msg.header.frame_id = self.laser_frame
+        msg.angle_min = scan.angle_min
+        msg.angle_max = scan.angle_max
+        msg.angle_increment = scan.angle_increment
+        msg.time_increment = scan.time_increment
+        msg.scan_time = scan.scan_time
+        msg.range_min = scan.range_min
+        msg.range_max = scan.range_max
+        msg.ranges = list(scan.ranges)
+        self.scan_pub.publish(msg)
+
+    def _build_odom_msg(self):
+        now = rospy.Time.now()
+        quat = _yaw_to_quaternion(self.odom_theta)
+
+        odom = Odometry()
+        odom.header.stamp = now
+        odom.header.frame_id = self.odom_frame
+        odom.child_frame_id = self.base_frame
+        odom.pose.pose.position.x = self.odom_x
+        odom.pose.pose.position.y = self.odom_y
+        odom.pose.pose.position.z = 0.0
+        odom.pose.pose.orientation = quat
+        odom.pose.covariance[0] = 0.05
+        odom.pose.covariance[7] = 0.05
+        odom.pose.covariance[35] = 0.1
+        if self.latest_pose_speed is not None:
+            odom.twist.twist.linear.x = self.latest_pose_speed.twist.linear
+            odom.twist.twist.linear.y = 0.0
+            odom.twist.twist.angular.z = self.latest_pose_speed.twist.angular
+        odom.twist.covariance[0] = 0.001
+        odom.twist.covariance[35] = 0.005
+
+        if self.publish_tf:
+            tf_msg = TransformStamped()
+            tf_msg.header.stamp = now
+            tf_msg.header.frame_id = self.odom_frame
+            tf_msg.child_frame_id = self.base_frame
+            tf_msg.transform.translation.x = self.odom_x
+            tf_msg.transform.translation.y = self.odom_y
+            tf_msg.transform.translation.z = 0.0
+            tf_msg.transform.rotation = quat
+            self.tf_broadcaster.sendTransform(tf_msg)
+
+        return odom
+
+    def _publish_odom_and_tf(self):
+        odom = self._build_odom_msg()
+        self.odom_raw_pub.publish(odom)
+        self.odom_pub.publish(odom)
+
+    async def _sensor_publish_loop(self):
+        rate = 1.0 / self.publish_hz
+        last_poll = rospy.get_time()
+        while not rospy.is_shutdown():
+            now = rospy.get_time()
+            if now - last_poll >= self.state_poll_sec:
+                last_poll = now
+                await self._request_pose_once()
+                await self._request_scan_once()
+
+            self._publish_scan()
+            self._publish_odom_and_tf()
+            await asyncio.sleep(rate)
 
     # -- 연결 / 초기화 --
 
     async def connect(self):
-        settings = CommuSettings(addr=self.robot_ip, port=self.robot_port, identity=self.robot_identity)
-        self.robot = WooshRobot(settings)
-        await self.robot.run()
+        log_sdk_owner(
+            rospy.loginfo,
+            "open_start",
+            self.OWNER_NAME,
+            self.robot_identity,
+            self.robot_ip,
+            self.robot_port,
+            self.CALLER_NAME,
+        )
+        try:
+            settings = CommuSettings(addr=self.robot_ip, port=self.robot_port, identity=self.robot_identity)
+            self.robot = WooshRobot(settings)
+            ok = await self.robot.run()
+            if ok is False:
+                raise RuntimeError("Woosh SDK 연결 시작 실패")
 
-        info, ok, _ = await self.robot.robot_info_req(RobotInfo(), NO_PRINT, NO_PRINT)
-        if not ok:
-            raise RuntimeError("로봇 연결 실패")
+            self._owner_record = register_sdk_owner(
+                rospy,
+                self.OWNER_NAME,
+                self.robot_identity,
+                self.robot_ip,
+                self.robot_port,
+                self.CALLER_NAME,
+            )
+            log_sdk_owner(
+                rospy.loginfo,
+                "open_established",
+                self.OWNER_NAME,
+                self.robot_identity,
+                self.robot_ip,
+                self.robot_port,
+                self.CALLER_NAME,
+                note="single_owner_registered",
+            )
 
-        print_battery_status(info.battery.power)
-        rospy.loginfo("로봇 연결 성공!")
-        await self._setup_map()
+            info, ok, _ = await self.robot.robot_info_req(RobotInfo(), NO_PRINT, NO_PRINT)
+            if not ok:
+                raise RuntimeError("로봇 연결 실패")
+
+            print_battery_status(info.battery.power)
+            await self._setup_sensor_stream(info)
+            rospy.loginfo("로봇 연결 성공! SDK single owner 준비 완료.")
+            await self._setup_map()
+            self.startup_complete_event.set()
+        except Exception as exc:
+            self.startup_error = str(exc)
+            self.startup_complete_event.set()
+            log_sdk_owner(
+                rospy.logerr,
+                "open_failed",
+                self.OWNER_NAME,
+                self.robot_identity,
+                self.robot_ip,
+                self.robot_port,
+                self.CALLER_NAME,
+                note=str(exc),
+            )
+            raise
 
     async def _setup_map(self):
         """네비게이션 설정: 맵 로드 → 로컬라이제이션 → 초기화 → 자동 모드."""
@@ -1117,7 +1333,7 @@ class SmoothTwistController:
         # ── 6. 선택된 맵 정보 저장 (carto_loc 등 후속 스택에서 참조) ──────
         self.selected_map_name = target["name"]
         self.selected_map_source = target["source"]
-        # 센서 브릿지(서브프로세스)가 참조할 수 있도록 ROS 파라미터로도 공유
+        # 후속 localization 스택이 참조할 수 있도록 ROS 파라미터로 공유
         rospy.set_param("/woosh/selected_map_name", target["name"])
         rospy.set_param("/woosh/selected_map_source", target["source"])
 
@@ -1203,23 +1419,43 @@ class SmoothTwistController:
         odom_y = odom[1] if odom is not None else None
         self._csv_logger.log(source, linear, angular, odom_x, odom_y)
 
-    async def _send_twist(self, linear=0.0, angular=0.0, _source="quintic"):
+    def _enqueue_twist(self, linear=0.0, angular=0.0, _source="quintic"):
         self._log_cmd(_source, linear, angular)
-        await self.robot.twist_req(Twist(linear=linear, angular=angular), NO_PRINT, NO_PRINT)
+        try:
+            self._twist_queue.get_nowait()
+        except Empty:
+            pass
+        try:
+            self._twist_queue.put_nowait((linear, angular, _source))
+        except Exception:
+            pass
 
-    def _fire_twist(self, linear=0.0, angular=0.0, _source="quintic"):
-        """twist_req를 백그라운드 asyncio 태스크로 발행한다.
+    async def _twist_sender_loop(self):
+        while not rospy.is_shutdown():
+            try:
+                linear, angular, _source = self._twist_queue.get_nowait()
+            except Empty:
+                await asyncio.sleep(0.005)
+                continue
 
-        await 없이 호출하므로 WebSocket RTT(~100ms)가 제어 루프 주기에 영향을 주지 않는다.
-        이전 태스크가 아직 완료되지 않았으면 취소 후 최신 명령으로 교체한다(최신 명령 우선).
-        정지 명령 등 완료를 보장해야 하는 경우에는 _send_twist(await)를 직접 사용한다.
-        """
-        self._log_cmd(_source, linear, angular)
-        if self._pending_send_task is not None and not self._pending_send_task.done():
-            self._pending_send_task.cancel()
-        self._pending_send_task = asyncio.ensure_future(
-            self.robot.twist_req(Twist(linear=linear, angular=angular), NO_PRINT, NO_PRINT)
-        )
+            try:
+                await self.robot.twist_req(
+                    Twist(linear=linear, angular=angular),
+                    NO_PRINT,
+                    NO_PRINT,
+                )
+            except Exception as exc:
+                rospy.logwarn("[SmoothTwistController] twist_req 실패 (%s): %s", _source, exc)
+
+    async def _flush_stop_commands(self, repeats=3, delay=0.05):
+        if self.robot is None:
+            return
+        for _ in range(repeats):
+            try:
+                await self.robot.twist_req(Twist(linear=0.0, angular=0.0), NO_PRINT, NO_PRINT)
+            except Exception as exc:
+                rospy.logwarn("[SmoothTwistController] 종료 stop flush 실패: %s", exc)
+            await asyncio.sleep(delay)
 
     # -- cmd_vel 패스스루 (move_base_on 모드) --
 
@@ -1250,20 +1486,80 @@ class SmoothTwistController:
         cmd_vel_adapter 서브프로세스 대신 기존 WebSocket 연결을 재사용하여
         SmoothTwistController + CmdVelAdapter 동시 연결 충돌을 방지한다.
         """
+        if not self.sdk_ready_event.is_set() or self.robot is None:
+            rospy.logerr(
+                "[SmoothTwistController] cmd_vel 패스스루 활성화 실패 — SDK owner가 아직 준비되지 않았습니다."
+            )
+            raise RuntimeError("SDK owner not ready")
+
         self._cmd_vel_watchdog_timeout = watchdog_timeout
-        self._cmd_vel_sub = rospy.Subscriber(
-            "/cmd_vel", RosTwist, self._cmd_vel_callback, queue_size=1
-        )
+        if self._cmd_vel_sub is None:
+            self._cmd_vel_sub = rospy.Subscriber(
+                "/cmd_vel", RosTwist, self._cmd_vel_callback, queue_size=1
+            )
         self._cmd_vel_enabled = True
         rospy.loginfo(
-            "[SmoothTwistController] cmd_vel 패스스루 활성화 — "
-            "move_base /cmd_vel → 기존 WebSocket 경유 전송 (watchdog: %.1fs)",
+            "[SmoothTwistController] cmd_vel 패스스루 활성화 "
+            "[owner=%s pid=%s identity=%s target=%s:%s watchdog=%.1fs]",
+            self.OWNER_NAME,
+            os.getpid(),
+            self.robot_identity,
+            self.robot_ip,
+            self.robot_port,
             watchdog_timeout,
         )
+        log_sdk_owner(
+            rospy.loginfo,
+            "passthrough_enabled",
+            self.OWNER_NAME,
+            self.robot_identity,
+            self.robot_ip,
+            self.robot_port,
+            self.CALLER_NAME,
+            note="cmd_vel_passthrough",
+        )
+
+    def run_move_base_self_check(self):
+        rospy.loginfo("[SmoothTwistController] move_base_on self-check 시작")
+        errors = []
+
+        owner_ok, owner_record = current_process_is_registered_owner(rospy)
+        if not owner_ok:
+            errors.append(f"현재 프로세스가 등록된 SDK owner가 아닙니다: {owner_record}")
+
+        if not self.sdk_ready_event.is_set() or self.robot is None:
+            errors.append("SDK owner 연결이 아직 준비되지 않았습니다.")
+
+        if not self._cmd_vel_enabled or self._cmd_vel_sub is None:
+            errors.append("cmd_vel 패스스루가 활성화되지 않았습니다.")
+
+        try:
+            lines = inspect_tcp_connections(self.robot_port, target_ip=self.robot_ip)
+            owners = parse_connection_owners(lines)
+            for owner in owners:
+                rospy.loginfo("[SDK_OWNER] observed_connection pid=%s proc=%s raw=%s",
+                              owner["pid"], owner["proc"], owner["line"])
+            if len(lines) != 1:
+                errors.append(f"TCP 연결 수가 1이 아닙니다: {len(lines)}")
+            elif owners and owners[0]["pid"] != os.getpid():
+                errors.append(
+                    f"유일 연결 owner가 현재 프로세스가 아닙니다: pid={owners[0]['pid']} proc={owners[0]['proc']}"
+                )
+        except Exception as exc:
+            errors.append(f"`ss -tnp` self-check 실패: {exc}")
+
+        if errors:
+            for error in errors:
+                rospy.logerr("[SmoothTwistController] move_base_on self-check 실패: %s", error)
+            return False
+
+        rospy.loginfo("[SmoothTwistController] move_base_on self-check 통과")
+        return True
 
     async def _move_exact_distance(self, distance):
         if abs(distance) < 0.005:
-            await self._send_twist()
+            self._enqueue_twist()
+            await asyncio.sleep(0.05)
             return True, f"완료: {distance:+.3f}m (너무 작음)"
 
         # 상태 초기화
@@ -1321,7 +1617,7 @@ class SmoothTwistController:
                 self.current_speed = 0.0
                 self.is_moving = False
 
-            self._fire_twist(self.current_speed)   # 비블로킹: WebSocket RTT가 루프 주기에 영향 없음
+            self._enqueue_twist(self.current_speed)   # dedicated sender loop가 최신 명령만 전송
             cmd_integrated += self.current_speed * dt
 
             # 실제 이동 거리: odom 우선, 없으면 속도 적분 폴백
@@ -1342,12 +1638,9 @@ class SmoothTwistController:
 
             await asyncio.sleep(period)
 
-        # 정지 명령 반복
-        for _ in range(5):
-            await self._send_twist()
-            await asyncio.sleep(period)
-
         self.is_moving = False
+        self._enqueue_twist(0.0, 0.0, _source="quintic_stop")
+        await asyncio.sleep(period * 2.0)
 
         error = self.estimated_distance - distance
         src = "odom" if odom_start is not None else "추정"
@@ -1363,7 +1656,7 @@ class SmoothTwistController:
         period_cmdvel = 1.0 / 20.0  # cmd_vel 패스스루 루프 간격 (20 Hz)
         _watchdog_fired = False
 
-        while True:
+        while not rospy.is_shutdown():
             # ── /mobile_move 거리 명령 우선 처리 ────────────────────────────
             try:
                 distance = self.command_queue.get_nowait()
@@ -1416,14 +1709,60 @@ class SmoothTwistController:
             else:
                 _watchdog_fired = False
 
-            self._fire_twist(linear, angular, _source="cmd_vel")   # 비블로킹: WebSocket RTT가 루프 주기에 영향 없음
+            self._enqueue_twist(linear, angular, _source="cmd_vel")
             await asyncio.sleep(period_cmdvel)
 
+    async def shutdown(self):
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
+
+        if self._cmd_vel_sub is not None:
+            try:
+                self._cmd_vel_sub.unregister()
+            except Exception:
+                pass
+            self._cmd_vel_sub = None
+
+        if self.robot is not None:
+            log_sdk_owner(
+                rospy.loginfo,
+                "close_start",
+                self.OWNER_NAME,
+                self.robot_identity,
+                self.robot_ip,
+                self.robot_port,
+                self.CALLER_NAME,
+            )
+            await self._flush_stop_commands()
+            try:
+                await self.robot.stop()
+            except Exception as exc:
+                rospy.logwarn("[SmoothTwistController] SDK 종료 중 예외: %s", exc)
+            log_sdk_owner(
+                rospy.loginfo,
+                "close_complete",
+                self.OWNER_NAME,
+                self.robot_identity,
+                self.robot_ip,
+                self.robot_port,
+                self.CALLER_NAME,
+            )
+        clear_registered_sdk_owner(rospy)
+
     async def run(self):
-        await self.connect()
         try:
-            await self._control_loop()
+            await self.connect()
+            sensor_task = asyncio.create_task(self._sensor_publish_loop())
+            twist_task = asyncio.create_task(self._twist_sender_loop())
+            try:
+                await self._control_loop()
+            finally:
+                sensor_task.cancel()
+                twist_task.cancel()
+                await asyncio.gather(sensor_task, twist_task, return_exceptions=True)
         finally:
+            await self.shutdown()
             self._csv_logger.close()
 
 
@@ -1454,7 +1793,7 @@ def _parse_cli_args(argv):
         "carto_loc_fix": False,    # 고정 맵 localization (AMCL 유사)
         "carto_loc_nonfix": False, # 서브맵 업데이트 포함 localization
         "nav_on": False,           # localization 연동 Global Costmap (costmap_2d standalone)
-        "move_base_on": False,     # move_base 자율 내비게이션 (navfn + DWA + cmd_vel_adapter)
+        "move_base_on": False,     # move_base 자율 내비게이션 (navfn + DWA + cmd_vel passthrough)
         "legacy_costmap": False,   # 구버전 별칭
     }
     map_file = None
@@ -1583,6 +1922,29 @@ def _resolve_nav_map_file(localization_mode, cli_map_file, resolved_amcl_map=Non
     return rospy.get_param("~map_file", DEFAULT_MAP_FILE)
 
 
+def _wait_for_controller_ready(timeout=25.0):
+    start = time.monotonic()
+    while controller is None and (time.monotonic() - start) < min(timeout, 5.0):
+        if rospy.is_shutdown():
+            return None
+        time.sleep(0.05)
+
+    if controller is None:
+        rospy.logerr("SmoothTwistController 인스턴스를 만들지 못했습니다.")
+        return None
+
+    remaining = max(timeout - (time.monotonic() - start), 0.0)
+    if not controller.startup_complete_event.wait(timeout=remaining):
+        rospy.logerr("SmoothTwistController SDK owner 초기화 대기 타임아웃")
+        return None
+
+    if controller.startup_error:
+        rospy.logerr("SmoothTwistController SDK owner 초기화 실패: %s", controller.startup_error)
+        return None
+
+    return controller
+
+
 def _run_asyncio():
     global controller
     loop = asyncio.new_event_loop()
@@ -1592,6 +1954,11 @@ def _run_asyncio():
         loop.run_until_complete(controller.run())
     except KeyboardInterrupt:
         pass
+    except Exception as exc:
+        if controller is not None:
+            controller.startup_error = str(exc)
+            controller.startup_complete_event.set()
+        rospy.logerr("SmoothTwistController asyncio 루프 예외: %s", exc)
     finally:
         loop.close()
 
@@ -1640,9 +2007,10 @@ def main():
 
     Thread(target=_run_asyncio, daemon=True).start()
     rospy.Service('mobile_move', MoveMobile, service_handler)
-
-    # 센서 브릿지는 항상 기동
-    launcher.start_sensor_bridge()
+    ctrl = _wait_for_controller_ready(timeout=25.0)
+    if ctrl is None:
+        rospy.logerr("SDK owner 초기화에 실패하여 bringup을 중단합니다.")
+        return
 
     manual_rviz_modes = not (flags["gmap"] or flags["carto_map"] or flags["carto_loc_fix"] or flags["carto_loc_nonfix"])
     if flags["rviz"] and manual_rviz_modes:
@@ -1689,16 +2057,16 @@ def main():
                 # cmd_vel_adapter 서브프로세스 대신 SmoothTwistController의 패스스루 기능을 사용한다.
                 # → 별도 WebSocket 연결 생성 없이 기존 연결 재사용 (이중 연결 충돌 방지)
                 rospy.loginfo("move_base_on 요청 감지 — localization=%s", localization_mode)
-                _t = time.monotonic()
-                while controller is None and (time.monotonic() - _t) < 10.0:
-                    time.sleep(0.1)
-                if controller is not None:
-                    controller.enable_cmd_vel_passthrough()
-                else:
-                    rospy.logwarn(
-                        "SmoothTwistController 초기화 대기 타임아웃 — "
-                        "cmd_vel 패스스루 비활성 (move_base /cmd_vel이 로봇에 전달되지 않습니다)"
-                    )
+                try:
+                    ctrl.enable_cmd_vel_passthrough()
+                except RuntimeError as exc:
+                    rospy.logerr("cmd_vel 패스스루 활성화 실패: %s", exc)
+                    rospy.signal_shutdown("cmd_vel passthrough enable failed")
+                    return
+                if not ctrl.run_move_base_self_check():
+                    rospy.logerr("move_base_on self-check 실패 — move_base 시작을 중단합니다.")
+                    rospy.signal_shutdown("move_base_on self-check failed")
+                    return
                 launcher.start_move_base()
             else:
                 # nav_on 모드: standalone Global Costmap (costmap_2d_node)

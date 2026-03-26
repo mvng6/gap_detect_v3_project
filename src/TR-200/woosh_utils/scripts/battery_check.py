@@ -28,6 +28,9 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 woosh_robot_dir = os.path.abspath(os.path.join(script_dir, "../../woosh_robot_py"))
 if woosh_robot_dir not in sys.path:
     sys.path.insert(0, woosh_robot_dir)
+woosh_utils_src_dir = os.path.abspath(os.path.join(script_dir, "../src"))
+if woosh_utils_src_dir not in sys.path:
+    sys.path.insert(0, woosh_utils_src_dir)
 
 try:
     from woosh_robot import WooshRobot
@@ -43,10 +46,8 @@ except ImportError as e:
 try:
     from woosh_utils import Colors, print_battery_status
 except ImportError:
-    woosh_utils_src_dir = os.path.abspath(os.path.join(script_dir, "../src"))
-    if woosh_utils_src_dir not in sys.path:
-        sys.path.insert(0, woosh_utils_src_dir)
     from woosh_utils import Colors, print_battery_status
+from woosh_utils import log_sdk_owner
 
 
 async def check_battery_async(robot_ip, robot_port):
@@ -68,7 +69,25 @@ async def check_battery_async(robot_ip, robot_port):
     robot = WooshRobot(settings)
     
     try:
+        log_sdk_owner(
+            rospy.loginfo,
+            "open_start",
+            "battery_check",
+            "battery_checker",
+            robot_ip,
+            robot_port,
+            "battery_check.py:check_battery_async",
+        )
         await robot.run()
+        log_sdk_owner(
+            rospy.loginfo,
+            "open_established",
+            "battery_check",
+            "battery_checker",
+            robot_ip,
+            robot_port,
+            "battery_check.py:check_battery_async",
+        )
 
         # 로봇 정보 요청 → 배터리 잔량 출력
         info, ok, msg = await robot.robot_info_req(RobotInfo())
@@ -83,7 +102,25 @@ async def check_battery_async(robot_ip, robot_port):
         rospy.logerr(f"{Colors.FAIL}{Colors.BOLD}❌ 오류 발생: {e}{Colors.ENDC}")
     finally:
         # 연결 종료
+        log_sdk_owner(
+            rospy.loginfo,
+            "close_start",
+            "battery_check",
+            "battery_checker",
+            robot_ip,
+            robot_port,
+            "battery_check.py:check_battery_async",
+        )
         await robot.stop()
+        log_sdk_owner(
+            rospy.loginfo,
+            "close_complete",
+            "battery_check",
+            "battery_checker",
+            robot_ip,
+            robot_port,
+            "battery_check.py:check_battery_async",
+        )
         rospy.loginfo(f"{Colors.OKGREEN}✅ 연결 종료{Colors.ENDC}")
 
 

@@ -13,9 +13,13 @@ Woosh TR-200 SDK의 twist_req()로 전달합니다.
   - Watchdog: /cmd_vel 수신 중단 1.0초 후 자동 정지 명령 전송
   - asyncio 루프에서 SDK 호출, ROS 콜백과 Queue로 통신
 
-사용 예:
-  rosrun woosh_bringup cmd_vel_adapter.py _robot_ip:=169.254.128.2
-  roslaunch woosh_bringup cmd_vel_adapter.launch robot_ip:=169.254.128.2
+주의:
+  기본 실행은 차단되어 있으며, `~allow_legacy_cmd_vel_adapter:=true` 로
+  명시적 opt-in 한 경우에만 direct SDK 연결을 허용합니다.
+
+legacy 사용 예:
+  rosrun woosh_bringup cmd_vel_adapter.py _robot_ip:=169.254.128.2 _allow_legacy_cmd_vel_adapter:=true
+  roslaunch woosh_bringup cmd_vel_adapter.launch robot_ip:=169.254.128.2 allow_legacy_cmd_vel_adapter:=true
 """
 
 import asyncio
@@ -33,9 +37,13 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WOOSH_ROBOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../woosh_robot_py"))
 if WOOSH_ROBOT_DIR not in sys.path:
     sys.path.insert(0, WOOSH_ROBOT_DIR)
+WOOSH_UTILS_SRC_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../woosh_utils/src"))
+if WOOSH_UTILS_SRC_DIR not in sys.path:
+    sys.path.insert(0, WOOSH_UTILS_SRC_DIR)
 
 from woosh_robot import WooshRobot  # noqa: E402
 from woosh_interface import CommuSettings, NO_PRINT  # noqa: E402
+from woosh_utils import log_sdk_owner  # noqa: E402
 from woosh.proto.robot.robot_pack_pb2 import Twist  # noqa: E402
 from woosh.proto.robot.robot_pb2 import RobotInfo  # noqa: E402
 
@@ -108,6 +116,16 @@ class CmdVelAdapter:
             pass
 
     async def _connect(self):
+        log_sdk_owner(
+            rospy.logwarn,
+            "legacy_open_start",
+            "CmdVelAdapter",
+            self.robot_identity,
+            self.robot_ip,
+            self.robot_port,
+            "cmd_vel_adapter.py:CmdVelAdapter._connect",
+            note="legacy_opt_in_required",
+        )
         settings = CommuSettings(
             addr=self.robot_ip,
             port=self.robot_port,
@@ -130,6 +148,16 @@ class CmdVelAdapter:
             raise RuntimeError(f"로봇 정보 조회 실패: {msg}")
 
         rospy.loginfo("[cmd_vel_adapter] 로봇 연결 성공. /cmd_vel 수신 대기 중.")
+        log_sdk_owner(
+            rospy.logwarn,
+            "legacy_open_established",
+            "CmdVelAdapter",
+            self.robot_identity,
+            self.robot_ip,
+            self.robot_port,
+            "cmd_vel_adapter.py:CmdVelAdapter._connect",
+            note="deprecated_standalone_adapter",
+        )
 
     async def _send_twist(self, linear=0.0, angular=0.0):
         if self.robot is None:
@@ -186,14 +214,54 @@ class CmdVelAdapter:
 
     async def _shutdown(self):
         if self.robot is not None:
+            log_sdk_owner(
+                rospy.logwarn,
+                "legacy_close_start",
+                "CmdVelAdapter",
+                self.robot_identity,
+                self.robot_ip,
+                self.robot_port,
+                "cmd_vel_adapter.py:CmdVelAdapter._shutdown",
+            )
             try:
                 await self.robot.stop()
             except Exception as exc:
                 rospy.logwarn("[cmd_vel_adapter] SDK 종료 중 예외: %s", exc)
+            log_sdk_owner(
+                rospy.logwarn,
+                "legacy_close_complete",
+                "CmdVelAdapter",
+                self.robot_identity,
+                self.robot_ip,
+                self.robot_port,
+                "cmd_vel_adapter.py:CmdVelAdapter._shutdown",
+            )
 
 
 def main():
     rospy.init_node("cmd_vel_adapter", anonymous=False)
+    allow_legacy = bool(rospy.get_param("~allow_legacy_cmd_vel_adapter", False))
+    if not allow_legacy:
+        robot_ip = rospy.get_param("~robot_ip", "169.254.128.2")
+        robot_port = rospy.get_param("~robot_port", 5480)
+        robot_identity = rospy.get_param("~robot_identity", "cmd_vel_adapter")
+        log_sdk_owner(
+            rospy.logfatal,
+            "legacy_blocked",
+            "CmdVelAdapter",
+            robot_identity,
+            robot_ip,
+            robot_port,
+            "cmd_vel_adapter.py:main",
+            note="set ~allow_legacy_cmd_vel_adapter:=true for explicit opt-in",
+        )
+        rospy.logfatal(
+            "[cmd_vel_adapter] standalone direct SDK client는 기본 비활성화되었습니다. "
+            "woosh_service_driver.py move_base_on의 cmd_vel passthrough를 사용하거나 "
+            "~allow_legacy_cmd_vel_adapter:=true 로 명시적 opt-in 하세요."
+        )
+        raise SystemExit(2)
+
     node = CmdVelAdapter()
 
     loop = asyncio.new_event_loop()

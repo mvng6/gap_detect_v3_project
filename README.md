@@ -94,7 +94,7 @@ Cartographer 서브맵 업데이트 localization + nav_on:
 rosrun woosh_bringup woosh_service_driver.py carto_loc_nonfix nav_on state_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.pbstream
 ```
 
-move_base 자율 내비게이션(navfn + DWA + cmd_vel_adapter)을 함께 활성화하려면:
+move_base 자율 내비게이션(navfn + DWA + SmoothTwistController cmd_vel passthrough)을 함께 활성화하려면:
 
 ```bash
 rosrun woosh_bringup woosh_service_driver.py amcl move_base_on map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
@@ -474,7 +474,7 @@ a0509, **a0912**, e0509, h2017, h2515, m0609, m0617, m1013, m1509
 - [x] Global Planner 설정 — `global_planner_params.yaml` (navfn/Dijkstra)
 - [x] Local Planner 설정 — `local_planner_params.yaml` (dwa_local_planner, max_vel_x: 0.12 m/s)
 - [x] `woosh_service_driver.py` — `move_base_on` CLI 플래그 구현
-  - [x] `start_move_base()` / `start_cmd_vel_adapter()` 메서드 구현
+  - [x] `start_move_base()` / `enable_cmd_vel_passthrough()` 경로 구현
   - [x] `move_base_on` + localization 유효성 검사 (SLAM 모드 상호 배제)
   - [x] `move_base_on` 우선 시 `nav_on` 자동 비활성화
 - [ ] 목표점 1개 이동 성공 (실기 테스트 필요)

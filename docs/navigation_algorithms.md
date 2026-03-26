@@ -18,7 +18,7 @@
      ↓
 [장애물 회피] Local Planner  →  /cmd_vel
      ↓
-[속도 전달] SmoothTwistController (cmd_vel passthrough)  →  Woosh SDK (WebSocket)
+[센서 + 속도 전달] SmoothTwistController (scan/odom + cmd_vel passthrough)  →  Woosh SDK (WebSocket)
 ```
 
 > **구조 변경 이력 (#002)**: 기존에는 `cmd_vel_adapter`(서브프로세스)가 별도 WebSocket 연결을 열어 `/cmd_vel`을 로봇에 전달하였으나, 이중 WebSocket 연결로 명령 충돌이 발생하였다. 현재는 `SmoothTwistController` 내부의 **cmd_vel passthrough** 기능이 기존 WebSocket 연결을 재사용하여 `/cmd_vel`을 전달한다.
@@ -304,7 +304,7 @@ move_base가 발행하는 `/cmd_vel`을 Woosh SDK `twist_req()`로 전달하는 
 | 최대 선속도 클리핑 | 0.12 m/s |
 | 최대 각속도 클리핑 | 0.5 rad/s |
 | Watchdog 타임아웃 | 1.0 s (토픽 중단 시 자동 정지) |
-| twist 전송 방식 | fire-and-forget 비동기 태스크 (#003: WebSocket RTT 블로킹 방지) |
+| twist 전송 방식 | dedicated sender task + latest-wins queue (#003: WebSocket RTT 블로킹 방지) |
 
 > **변경 배경 (#002)**: 기존 `cmd_vel_adapter.py`는 별도 서브프로세스로 두 번째 WebSocket 연결을 열었다. Woosh SDK가 중복 연결을 처리하는 과정에서 명령 드롭 및 연결 재설정이 발생하여 stop-and-go 현상의 주원인이 되었다. `SmoothTwistController`의 기존 WebSocket 연결을 재사용하는 passthrough 방식으로 전환하여 해결.
 
