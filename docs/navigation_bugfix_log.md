@@ -15,6 +15,11 @@
 | 2026-03-26 | #002 | 버그수정 | 이중 WebSocket 연결 충돌 해결 | 완료 |
 | 2026-03-26 | #003 | 버그수정 | await twist_req 블로킹으로 실질 제어 주기 저하 해결 | 완료 |
 | 2026-03-26 | #004 | 기능추가 | navigation 명령 속도 실시간 CSV 로깅 | 완료 |
+| 2026-03-26 | #005 | 분석 | 전진 구동 중 불안정 좌우 회전 원인 분석 | 완료 |
+| 2026-03-26 | #006 | 버그수정 | angular 포화·oscillation recovery·속도 미달 수정 (파라미터 4종 + hold-last 패치) | 완료 |
+| 2026-03-26 | #007 | 버그수정 | #006 회귀 버그 — acc_lim_theta=0.15로 DWA 탐색 공간 붕괴 → 영구 stop 수정 | 완료 |
+| 2026-03-26 | #008 | 버그수정 | 전진 중 angular 진동 잔존(stdev=0.065, 반전7.9%) + clearing_rotation 재발(×2) 수정 | 완료 |
+| 2026-03-26 | #009 | 버그수정 | angular 포화 37.2% + rotate_cw 구간 57% 낭비 → path_distance_bias 추가 완화 + clearing_rotation 비활성화 | 완료 |
 
 ---
 
@@ -660,13 +665,755 @@ EOF
 
 ---
 
-## 미해결 항목
+---
 
-> 분석에서 확인된 원인 중 아직 수정되지 않은 항목. 추후 작업 시 이 목록을 참조한다.
+## #005 · 분석 · 전진 구동 중 불안정 좌우 회전 원인 분석
+
+**작업 시각**: 2026-03-26
+**분류**: 원인 분석
+**관련 파일**:
+- `src/TR-200/woosh_bringup/scripts/woosh_service_driver.py`
+- `src/TR-200/woosh_navigation/MoveBase/woosh_navigation_mb/config/local_planner_params.yaml`
+- `src/TR-200/woosh_bringup/logs/nav_cmd_20260326_062711.csv`
+
+---
+
+### 현상
+
+`move_base_on` 모드로 전진 구동 시 등속도는 유지되나 **로봇이 좌/우로 불규칙하게 반복 회전**하는 모션 발생.
+
+---
+
+### 로그 통계 요약 (nav_cmd_20260326_062711.csv)
+
+| 항목 | 값 |
+|------|-----|
+| 전진 구간 총 스텝 | 4,631 스텝 |
+| angular ≠ 0인 스텝 | 4,524 / 4,631 (97.7%) |
+| angular = ±0.10 포화 스텝 | 1,492 / 4,631 (32.2%) |
+| 포화 블록 수 (연속 ≥ 3 스텝) | 140개, 평균 지속 10.7 스텝 (~550ms) |
+| 한 스텝 내 angular 급변 (> 0.05 rad/s) | 272회 / 4,630 (5.9%) |
+| cmd_vel 발행 주기 | 평균 51ms (≈ 19.6 Hz) |
+
+---
+
+### 분석 결과
+
+#### 원인 A (주 원인) — `path_distance_bias` 과도 설정으로 localization 노이즈를 과도 추종
+
+```yaml
+# local_planner_params.yaml
+path_distance_bias: 32.0   # 매우 강한 전역 경로 추종 강도
+goal_distance_bias: 24.0
+occdist_scale: 0.02         # 장애물 회피 가중치는 거의 무시
+```
+
+AMCL/Cartographer localization의 pose 추정에 수 cm 수준 노이즈가 존재할 경우, 전역 경로가 로봇의 좌/우로 번갈아 나타나는 것처럼 DWA에 보이게 된다. `path_distance_bias: 32.0`이 높아 DWA는 이 미세한 경로 오차에도 즉시 최대 각속도로 반응한다.
+
+**로그 근거**: 10초 구간별 mean_angular의 부호가 전 구간에 걸쳐 반전되며, 포화 블록 140개가 전진 구간 전반에서 지속 발생.
+
+---
+
+#### 원인 B — `_fire_twist` WebSocket 태스크 취소 구조로 angular 방향 전환 시 명령 누락
+
+```python
+# woosh_service_driver.py
+if self._pending_send_task is not None and not self._pending_send_task.done():
+    self._pending_send_task.cancel()   # 이전 명령 취소
+self._pending_send_task = asyncio.ensure_future(...)  # 최신 명령만 전송
+```
+
+WebSocket RTT ≈ 100ms인데 패스스루 루프 주기는 50ms(20Hz)이므로 이전 `twist_req`가 완료되기 전에 다음 루프가 취소하고 새 명령을 덮어쓴다. angular 값이 바뀌는 순간의 명령이 취소될 경우 로봇은 이전 angular 방향으로 더 오래 구동되어 오버슈트가 발생한다.
+
+---
+
+#### 원인 C — 큐 비어있을 때 마지막 angular 값 재전송 (hold-last) 로 포화 구간 연장
+
+```python
+# _control_loop 패스스루 루프
+if not got_cmd:
+    linear = self._cmd_vel_last_linear
+    angular = self._cmd_vel_last_angular   # ← 마지막 angular 재전송
+```
+
+DWA가 `angular=+0.1`을 발행한 직후 루프가 큐에서 꺼내지 못하면, 다음 사이클에서 `+0.1`을 추가로 재전송한다. DWA는 이미 `angular=-0.1`로 갱신했어도 로봇은 `+0.1`을 한 번 더 받는 구조다. angular 포화 구간이 실제 DWA 의도보다 길어지는 직접 원인이다.
+
+---
+
+#### 원인 D — `min_vel_theta: 0.05` 불감대로 미세 보정 시 오버슈트 반복
+
+```yaml
+# local_planner_params.yaml
+min_vel_theta: 0.05   # DWA 탐색 공간의 각속도 하한
+```
+
+경로 오차가 매우 작아 `0 < needed_angular < 0.05`인 경우에도 DWA는 최소 0.05 rad/s를 적용한다. 이 오버슈트가 반대 방향 보정을 유발하고 좌/우 진동이 반복된다.
+
+---
+
+#### 원인 E — `acc_lim_theta: 0.5 rad/s²` + 100ms 통신 지연으로 각속도 오버슈트
+
+```yaml
+# local_planner_params.yaml
+acc_lim_theta: 0.5    # 허용 각가속도
+```
+
+DWA 시뮬레이션은 명령이 즉각 반영된다고 가정한다. 실제로는 WebSocket 100ms + 루프 지연이 더해져, 계산한 각속도 변화가 로봇에 반영되는 시점이 늦다. 결과적으로 DWA 제어 루프가 지연된 상태를 기반으로 보정을 누적시키며 오버슈트를 반복한다.
+
+---
+
+### 원인 연쇄 요약
+
+```
+localization 노이즈 (cm 수준)
+    → DWA가 경로 좌/우 오차 감지
+    → path_distance_bias=32.0 으로 최대 angular 명령 (-0.1 또는 +0.1)
+    → _fire_twist에서 이전 태스크 취소 → 방향 전환 시 일부 명령 누락
+    → hold-last 재전송으로 포화 값이 불필요하게 연장
+    → 로봇 과보정 → 반대 방향 경로 오차 발생
+    → 반대 방향 최대 angular 명령 → 반복
+```
+
+---
+
+### 조치 계획
+
+| 원인 | 우선순위 | 권장 조치 |
+|------|----------|-----------|
+| A. path_distance_bias 과도 | 높음 | `32.0` → `16.0~20.0`으로 낮추고 `goal_distance_bias` 상향 |
+| D. min_vel_theta 불감대 | 높음 | `0.05` → `0.01~0.02`로 낮춰 미세 보정 가능하게 |
+| E. acc_lim_theta + 통신 지연 | 중간 | `0.5` → `0.2` 이하로 낮춰 WebSocket 지연 내 오버슈트 방지 |
+| C. hold-last 재전송 | 중간 | 큐 미수신 시 angular를 0으로 폴백하거나 DWA 발행 주기와 동기화 |
+| B. _fire_twist 취소 | 낮음 | angular 방향 전환 시 취소 없이 전송 완료 후 교체하는 방식 검토 |
+
+---
+
+---
+
+## #006 · 버그수정 · 전진 구동 중 각속도 포화 / oscillation recovery / 속도 미달성 수정
+
+**작업 시각**: 2026-03-26
+**분류**: 버그 수정 (파라미터 튜닝 + hold-last 패치)
+**수정 파일**:
+- `src/TR-200/woosh_navigation/MoveBase/woosh_navigation_mb/config/local_planner_params.yaml`
+- `src/TR-200/woosh_bringup/scripts/woosh_service_driver.py`
+**해결 항목**: #001-C(D), #005-A, #005-C, #005-D, #005-E
+
+---
+
+### 현상 (nav_cmd_20260326_064807.csv 기준)
+
+| 항목 | 관측값 | 기대값 |
+|------|--------|--------|
+| angular=-0.1 (포화) 구간 | 전진 구간 전반 지배적 | 소폭 방향 보정만 |
+| linear 최대값 | 0.05 m/s | 0.10 m/s |
+| DWA oscillation recovery | 발동됨 (+0.5 rad/s clearing rotation) | 발동 안됨 |
+| 총 로그 길이 | 6,860행 ÷ 20Hz ≈ 343초 | 짧은 거리 이동 |
+
+---
+
+### 원인별 수정 내역
+
+#### 수정 1 — `path_distance_bias: 32.0 → 18.0` (최우선)
+
+**원인**: AMCL/Cartographer localization 노이즈(수 cm 수준)와 path_distance_bias=32.0 조합으로 DWA가
+경로 좌/우 미세 오차에도 즉시 max angular(-0.1 rad/s) 포화 명령 출력.
+로봇이 max angular와 min linear를 동시에 유지하며 실효 전진속도가 0.01 m/s로 저하.
+
+```yaml
+# 수정 전
+path_distance_bias: 32.0
+
+# 수정 후
+path_distance_bias: 18.0   # goal_distance_bias(36.0)보다 낮춰 목표 접근 우선
+```
+
+---
+
+#### 수정 2 — `min_vel_theta: 0.05 → 0.01` (#005-D)
+
+**원인**: min_vel_theta=0.05 불감대로 실제 필요 각속도가 0~0.05 범위일 때 강제로 0.05 rad/s 적용.
+오버슈트 → 반대 방향 보정 → 진동 반복.
+
+```yaml
+# 수정 전
+min_vel_theta: 0.05
+
+# 수정 후
+min_vel_theta: 0.01   # 미세 보정 허용, 불감대 제거
+```
+
+---
+
+#### 수정 3 — `acc_lim_theta: 0.5 → 0.15` (#005-E)
+
+**원인**: DWA는 명령이 즉각 반영된다고 가정하지만 실제 WebSocket RTT ≈ 100ms 존재.
+acc_lim_theta=0.5 rad/s²이면 100ms 지연 동안 각속도가 최대 0.05 rad/s 오버슈트 가능.
+
+```yaml
+# 수정 전
+acc_lim_theta: 0.5
+
+# 수정 후
+acc_lim_theta: 0.15   # 100ms 지연 기준 최대 오버슈트: 0.015 rad/s
+```
+
+---
+
+#### 수정 4 — `oscillation_reset_dist: 0.05 → 0.15` (#001-C)
+
+**원인**: 합성 오도메트리(엔코더 미제공)의 부정확으로 5cm 이동을 DWA가 감지 못하는 경우 발생.
+oscillation 카운터 오증가 → clearing_rotation(복구 행동) 발동.
+CSV 로그에서 약 2000행 근처에 +0.5 rad/s clearing rotation 실제 발동 확인.
+
+```yaml
+# 수정 전
+oscillation_reset_dist: 0.05
+
+# 수정 후
+oscillation_reset_dist: 0.15   # 15cm 이상 이동 시 oscillation 카운터 초기화
+```
+
+---
+
+#### 수정 5 — hold-last angular 250ms 감쇠 (#005-C)
+
+**원인**: `_control_loop`에서 `/cmd_vel` 큐가 비었을 때 마지막 angular 값을 무한 재전송(hold-last).
+DWA가 새 명령을 발행했어도 로봇은 이전 포화 angular를 추가로 수신 → 포화 구간 연장.
+
+```python
+# 수정 전: 큐 비어있으면 last_angular 무조건 재전송
+if not got_cmd:
+    linear = self._cmd_vel_last_linear
+    angular = self._cmd_vel_last_angular
+
+# 수정 후: DWA 발행 주기(200ms) + 여유(50ms) = 250ms 초과 시 angular=0 폴백
+if not got_cmd:
+    linear = self._cmd_vel_last_linear
+    if last_time is not None and (time.monotonic() - last_time) < 0.25:
+        angular = self._cmd_vel_last_angular
+    else:
+        angular = 0.0
+```
+
+250ms 이내에는 hold-last 유지(DWA 갱신 주기 정상 동작 보장),
+250ms 초과 시 angular=0으로 폴백하여 stale 포화 값 지속 방지.
+
+---
+
+### 파라미터 변경 전/후 비교
+
+> ⚠️ `acc_lim_theta=0.15` 및 일부 값은 #007에서 수정됨. 실제 최종값은 #007 참조.
+
+| 파라미터 | #006 적용 전 | #006 적용 후 | 비고 |
+|----------|------------|------------|------|
+| `path_distance_bias` | 32.0 | 18.0 | 사용자가 22.0으로 재조정 (#007 확정) |
+| `goal_distance_bias` | 36.0 | 36.0 | 유지 |
+| `min_vel_theta` | 0.05 | **0.01** | 확정 |
+| `acc_lim_theta` | 0.5 | ~~0.15~~ | **회귀 버그 — #007에서 0.5로 복원** |
+| `oscillation_reset_dist` | 0.05 | 0.15 | 사용자가 0.1으로 재조정 (#007 확정) |
+
+---
+
+### 검증 방법
+
+```bash
+# 1. 구동 후 CSV 로그 분석
+python3 - <<'EOF'
+import pandas as pd
+df = pd.read_csv("src/TR-200/woosh_bringup/logs/nav_cmd_$(날짜).csv")
+fwd = df[df["direction"] == "forward"]
+# angular 포화 비율 (수정 후 20% 이하 목표)
+sat = (fwd["angular_rad_s"].abs() >= 0.099).sum() / len(fwd)
+print(f"angular 포화 비율: {sat:.1%}")
+# 선속도 최댓값 (수정 후 0.08 m/s 이상 목표)
+print(f"선속도 최대: {fwd['linear_m_s'].max():.3f} m/s")
+# clearing rotation 발동 여부
+rot = df[df["direction"].isin(["rotate_ccw", "rotate_cw"])]
+print(f"회전 전용 명령 발생: {len(rot)}행")
+EOF
+
+# 2. oscillation recovery 미발동 확인
+grep -c "rotate_ccw\|rotate_cw" src/TR-200/woosh_bringup/logs/nav_cmd_$(날짜).csv
+```
+
+---
+
+### 기대 효과
+
+| 현상 | 수정 전 | 수정 후 (기대) |
+|------|---------|----------------|
+| angular 포화 지속 | 전진 구간 전반 | 일시적 방향 보정만 |
+| 실효 선속도 | 0.01~0.05 m/s | 0.06~0.10 m/s |
+| oscillation recovery 발동 | 발동됨 | 억제됨 |
+| 직선 구간 안정성 | 좌우 진동 지속 | 소폭 보정 후 직선 유지 |
+
+---
+
+---
+
+## #007 · 버그수정 · #006 회귀 — acc_lim_theta=0.15로 DWA 탐색 공간 붕괴 수정
+
+**작업 시각**: 2026-03-26
+**분류**: 회귀 버그 수정
+**수정 파일**:
+- `src/TR-200/woosh_navigation/MoveBase/woosh_navigation_mb/config/local_planner_params.yaml`
+- `src/TR-200/woosh_bringup/scripts/woosh_service_driver.py`
+**회귀 원인**: #006의 `acc_lim_theta: 0.5 → 0.15` 변경
+
+---
+
+### 현상 (nav_cmd_20260326_072223.csv 기준)
+
+```
+elapsed 33.8s ~ 44.0s  →  stop(0, 0)  ×203행  →  10.2초 지속
+elapsed 44.0s ~        →  rotate_ccw(0, +0.5)  →  이후 전체 구간
+```
+
+- move_base 목표 수신 후 DWA가 처음부터 끝까지 `(0, 0)` 출력
+- `oscillation_timeout: 10.0s` 경과 → `clearing_rotation` 복구 행동 발동
+- 로봇 완전 전진 불가
+
+---
+
+### 근본 원인 분석
+
+#### DWA 속도 샘플링 공간과 acc_lim_theta의 관계
+
+DWA는 매 계획 주기(`sim_period = 1/controller_frequency`)마다 다음 범위만 속도 샘플링:
+
+```
+v_theta ∈ [curr_theta - acc_lim_theta × sim_period,
+            curr_theta + acc_lim_theta × sim_period]
+```
+
+`controller_frequency=5Hz → sim_period=0.2s`, 출발 시 `curr_theta=0`이면:
+
+| acc_lim_theta | 첫 주기 샘플 가능 angular 범위 | 결과 |
+|---|---|---|
+| 0.5 (#006 이전) | ±(0.5 × 0.2) = **±0.10 rad/s** | 정상 궤적 탐색 |
+| 0.15 (#006 적용 후) | ±(0.15 × 0.2) = **±0.03 rad/s** | 경로 추종에 필요한 회전 궤적 생성 불가 |
+
+`±0.03 rad/s`로는 경로가 조금이라도 방향 전환을 요구하는 경우 DWA가 생성하는 모든
+forward trajectory의 `path_cost`가 stop(0,0)보다 높게 평가됨 → **DWA가 stop을 최적 선택**:
+
+```
+[DWA 비용 함수]
+cost = path_distance_bias × path_cost
+     + goal_distance_bias × goal_cost
+     + occdist_scale × obstacle_cost
+
+stop(0,0): path_cost = 현재 경로 오차 (변화 없음)
+forward(0.06, ±0.03): path_cost = 회전이 부족해 경로에서 더 멀어짐
+→ stop이 이김 → 영구 stop 출력
+```
+
+#### acc_lim_theta의 역할 재정의
+
+| 역할 | 실제 담당 파라미터 |
+|------|------------------|
+| **DWA 탐색 가능 angular 범위 보장** | `acc_lim_theta` (충분히 커야 함) |
+| **angular 포화 억제** | `path_distance_bias` (낮출수록 angular 교정 필요성 감소) |
+
+#006에서 `acc_lim_theta=0.15`로 낮춘 의도(오버슈트 방지)는 잘못된 접근이었다.
+angular 포화는 `path_distance_bias: 32→22`로 이미 해결됨.
+
+---
+
+### 수정 내역
+
+#### 수정 1 — `acc_lim_theta: 0.15 → 0.5` (회귀 복원)
+
+```yaml
+# 수정 전 (#006 회귀 상태)
+acc_lim_theta: 0.15   # DWA angular 탐색 범위 ±0.03 rad/s → stop 루프
+
+# 수정 후
+acc_lim_theta: 0.5    # DWA angular 탐색 범위 ±0.10 rad/s → 정상 궤적 탐색
+```
+
+---
+
+#### 수정 2 — hold-last angular 임계값: 0.25s → 0.40s
+
+```python
+# 수정 전 (#006 적용 후)
+if last_time is not None and (time.monotonic() - last_time) < 0.25:
+
+# 수정 후
+if last_time is not None and (time.monotonic() - last_time) < 0.40:
+```
+
+**배경**: DWA `controller_frequency=5Hz` → 발행 주기 200ms.
+0.25s 임계값은 DWA 주기(200ms)와 너무 근접하여 ROS 타이머 지터(±30~50ms) 시
+5번째 passthrough 주기(250ms)에서 조기 발동 가능. 0.40s(2× DWA 주기)로 변경.
+
+---
+
+### 사용자 파라미터 재조정 (이번 세션 중 직접 수정)
+
+#006 적용 후 사용자가 아래 값을 직접 조정:
+
+| 파라미터 | #006 적용값 | 사용자 재조정값 | 비고 |
+|----------|------------|----------------|------|
+| `path_distance_bias` | 18.0 | **22.0** | 경로 추종 강도 소폭 상향 |
+| `oscillation_reset_dist` | 0.15 | **0.10** | 중간값으로 재조정 |
+
+---
+
+### 최종 파라미터 확정값 (이번 세션 기준)
+
+| 파라미터 | 원래값 (세션 전) | 최종값 | 변경 내역 |
+|----------|----------------|--------|-----------|
+| `path_distance_bias` | 32.0 | **22.0** | #006 → 18.0, 사용자 → 22.0 |
+| `goal_distance_bias` | 36.0 | 36.0 | 유지 |
+| `min_vel_theta` | 0.05 | **0.01** | #006 |
+| `acc_lim_theta` | 0.5 | **0.5** | #006 → 0.15, #007 → 0.5 복원 |
+| `oscillation_reset_dist` | 0.05 | **0.10** | #006 → 0.15, 사용자 → 0.10 |
+| hold-last angular 임계값 | (없음) | **0.40s** | #006 → 0.25s, #007 → 0.40s |
+
+---
+
+### 미해결 항목 갱신
 
 | 번호 | 원인 | 현상 | 권장 조치 | 우선순위 |
 |------|------|------|-----------|----------|
-| C | DWA oscillation_reset_dist 오감지 | 합성 오도메트리 부정확으로 oscillation 카운터 오증가 → 복구 행동 반복 | `oscillation_reset_dist: 0.05` → `0.10~0.15m`로 상향 | 중간 |
-| D | path_distance_bias 과도 설정 | 경로 이탈 시 급격한 방향 교정 → 속도 감속 반복 | `path_distance_bias: 32.0` → `20.0~24.0`으로 완화 | 중간 |
 | E | 전역 경로 재계획 중 cmd_vel 공백 | planner 연산 지연 시 watchdog 발동 가능 | `planner_patience` 연장 또는 watchdog_timeout 완화 검토 | 낮음 |
 | — | 합성 오도메트리 누적 오차 | 엔코더 미제공으로 장거리 정밀도 저하 | 외부 IMU 추가 후 EKF 융합 검토 | 낮음 |
+
+---
+
+---
+
+## #008 · 버그수정 · 전진 중 angular 진동 잔존 + clearing_rotation 재발 수정
+
+**작업 시각**: 2026-03-26
+**분류**: 버그 수정 (파라미터 튜닝)
+**수정 파일**:
+- `src/TR-200/woosh_navigation/MoveBase/woosh_navigation_mb/config/local_planner_params.yaml`
+- `src/TR-200/woosh_navigation/MoveBase/woosh_navigation_mb/config/move_base_params.yaml`
+**분석 기반**: `src/TR-200/woosh_bringup/logs/nav_cmd_20260326_073753.csv`
+
+---
+
+### 현상 (nav_cmd_20260326_073753.csv 기준)
+
+| 항목 | 관측값 | 기대값 |
+|------|--------|--------|
+| 전진 중 angular stdev | **0.065 rad/s** | ~0.02 이하 |
+| 전진 중 angular 부호 반전율 | **7.9%** (매 ~0.65s) | 1~2% 이하 |
+| 제자리 CCW 회전(+0.1 rad/s) 지속 | **20s 연속** (t=121~141) | 미발생 |
+| clearing_rotation(+0.5) 발동 | **2회, 각 12.8s** | 0회 |
+| 순수 전진(angular≈0) 비율 | **5.7%** | 40% 이상 |
+
+---
+
+### 근본 원인 분석
+
+#### 원인 A — `path_distance_bias=22.0` 여전히 과도 → 전진 중 지속 L/R 미세 진동
+
+#006에서 32→22로 낮췄지만, localization 노이즈 수 cm에 대해 DWA는 여전히 즉각 반응.
+
+- 전진 중 angular 범위: `[-0.100, +0.100]` (DWA가 상한에 계속 도달)
+- 부호 반전 7.9%: L/R 교번이 매 0.65s마다 발생 → 각도 오차 누적
+- 이 오차가 임계치 초과 시 DWA가 전진 중단 → 제자리 회전 돌입
+
+#### 원인 B — DWA 제자리 회전 속도 0.1 rad/s 고착
+
+DWA 속도 샘플링 제약:
+
+```
+정지 출발 시 샘플 가능 angular:
+  ±(acc_lim_theta × sim_period) = ±(0.5 × 0.2) = ±0.1 rad/s
+```
+
+로봇이 정지에서 제자리 회전 시작 시, DWA는 첫 주기에 최대 ±0.1만 샘플 가능.
+`goal_distance_bias=36.0`이 `path_distance_bias=22.0`에 비해 충분히 강하지 않아
+DWA가 0.1에서 0.2로 각속도를 올리는 궤적을 선택하지 않음 → **0.1 rad/s 고착**.
+
+고착 결과: 90° 회전에 필요한 시간 = π/2 ÷ 0.1 ≈ **15.7s** (oscillation_timeout 초과)
+
+#### 원인 C — `oscillation_timeout=10.0s`가 제자리 회전 완료 전 발동
+
+제자리 회전(+0.1 rad/s)으로 57° 이상 필요한 경우 10s 내 완료 불가 → move_base `oscillation_timeout` 발동 → `clearing_rotation(+0.5 rad/s, 12.8s)` × 2회
+
+---
+
+### 수정 내역
+
+#### 수정 1 — `path_distance_bias: 22.0 → 14.0`
+
+**파일**: `local_planner_params.yaml`
+
+```yaml
+# 수정 전
+path_distance_bias: 22.0
+
+# 수정 후
+path_distance_bias: 14.0   # localization 노이즈 내성 추가 확보
+```
+
+DWA가 경로 미세 오차에 덜 민감하게 반응. `goal_distance_bias(44.0) / path_distance_bias(14.0) = 3.14배` → 목표 방향 우선.
+
+---
+
+#### 수정 2 — `goal_distance_bias: 36.0 → 44.0`
+
+**파일**: `local_planner_params.yaml`
+
+```yaml
+# 수정 전
+goal_distance_bias: 36.0
+
+# 수정 후
+goal_distance_bias: 44.0   # 제자리 회전 시 DWA가 더 적극적으로 각속도 선택하도록 유도
+```
+
+제자리 회전 시 더 높은 angular를 선택하도록 goal_cost 가중치 상향.
+path_distance_bias 감소분을 보완하여 목표 도달 품질 유지.
+
+---
+
+#### 수정 3 — `oscillation_timeout: 10.0 → 30.0s`
+
+**파일**: `move_base_params.yaml`
+
+```yaml
+# 수정 전
+oscillation_timeout: 10.0
+
+# 수정 후
+oscillation_timeout: 30.0   # 0.1 rad/s × 30s = 172° 커버
+```
+
+DWA 제자리 회전 속도 최대 0.1 rad/s 기준 30s = 3 rad(172°) 커버.
+정상 DWA 회전이 완료될 시간을 충분히 확보하여 clearing_rotation 억제.
+
+---
+
+#### 수정 4 — `oscillation_distance: 0.2 → 0.3m`
+
+**파일**: `move_base_params.yaml`
+
+```yaml
+# 수정 전
+oscillation_distance: 0.2
+
+# 수정 후
+oscillation_distance: 0.3   # 저속 전진(0.06 m/s × 5s = 0.3m) 기준
+```
+
+저속 전진 시 oscillation 카운터 조기 누적 방지.
+
+---
+
+### 파라미터 변경 전/후 비교
+
+| 파라미터 | #007 확정값 | #008 적용값 | 변경 이유 |
+|----------|------------|------------|---------|
+| `path_distance_bias` | 22.0 | **14.0** | 전진 중 L/R 진동 억제 |
+| `goal_distance_bias` | 36.0 | **44.0** | 목표 추종 보강, 제자리 회전 가속 |
+| `oscillation_timeout` | 10.0 | **30.0** | clearing_rotation 억제 |
+| `oscillation_distance` | 0.2 | **0.3** | 저속 전진 oscillation 오감지 방지 |
+
+---
+
+### 기대 효과
+
+| 현상 | 수정 전 | 수정 후 (기대) |
+|------|---------|----------------|
+| 전진 중 angular stdev | 0.065 rad/s | ~0.03 이하 |
+| 전진 중 부호 반전율 | 7.9% | 2~3% 이하 |
+| 제자리 회전 속도 | 0.1 rad/s 고착 | 0.1~0.2 rad/s 이상 |
+| clearing_rotation 발동 | 2회/run | 0회 |
+| 순수 전진 비율 | 5.7% | 25% 이상 |
+
+---
+
+### 검증 방법
+
+```bash
+# 구동 후 CSV 로그 분석
+python3 - <<'EOF'
+import pandas as pd
+df = pd.read_csv("src/TR-200/woosh_bringup/logs/nav_cmd_$(날짜).csv")
+fwd = df[df['linear_m_s'] > 0.001]
+mix = fwd[fwd['angular_rad_s'].abs() > 0.01]
+
+# angular stdev (수정 후 0.03 이하 목표)
+print(f"전진 중 angular stdev: {fwd['angular_rad_s'].std():.4f}")
+
+# 부호 반전율
+flips = (fwd['angular_rad_s'].shift() * fwd['angular_rad_s'] < -0.001).sum()
+print(f"부호 반전율: {flips/len(fwd)*100:.1f}%")
+
+# clearing_rotation 발동 여부 (+0.5, lin=0)
+clr = df[(df['angular_rad_s'].abs() >= 0.499) & (df['linear_m_s'].abs() < 0.001)]
+print(f"clearing_rotation 발동: {len(clr)}행")
+
+# 순수 전진 비율
+pure_fwd = df[(df['linear_m_s'] > 0.001) & (df['angular_rad_s'].abs() < 0.01)]
+print(f"순수 전진 비율: {len(pure_fwd)/len(df)*100:.1f}%")
+EOF
+```
+
+---
+
+---
+
+## #009 · 버그수정 · angular 포화 37.2% + rotate_cw 구간 57% 낭비 수정
+
+**작업 시각**: 2026-03-26
+**분류**: 버그 수정
+**수정 파일**:
+- `src/TR-200/woosh_navigation/MoveBase/woosh_navigation_mb/config/local_planner_params.yaml`
+- `src/TR-200/woosh_navigation/MoveBase/woosh_navigation_mb/config/move_base_params.yaml`
+**근거 로그**: `src/TR-200/woosh_bringup/logs/nav_cmd_20260326_075507.csv`
+
+---
+
+### 현상
+
+`#008` 수정 후 실행된 `nav_cmd_20260326_075507.csv` 로그에서 다음 문제 확인:
+
+| 항목 | 값 |
+|------|-----|
+| 총 elapsed 구간 | 30.0s ~ 272.0s (241.9초) |
+| forward 행 | 3,517행 (74%) |
+| rotate_cw 행 | 752행 (16%) |
+| stop 행 | 475행 (10%) |
+| **forward 중 angular 포화(|ω|≥0.09) 비율** | **37.2%** (1,309/3,517) |
+| forward 중 소각도 보정(|ω|<0.05) 비율 | 31.8% (1,117/3,517) |
+| 평균 선속도 (forward 구간) | 0.053 m/s |
+| **첫 rotate_cw 발동 시각** | **elapsed 127.2s** (oscillation_timeout=30s에도 조기 발동) |
+| **총 rotate_cw 지속 시간** | **136.8s** (전체의 56.5%) |
+| 최종 완전 stop | elapsed 264.0s ~ 272.0s |
+
+---
+
+### 분석 결과
+
+#### 원인 A (최심각) — path_distance_bias=14.0이 여전히 localization 노이즈에 과민
+
+`#008`에서 22.0→14.0으로 완화했음에도 forward 중 angular 포화(|ω|≥0.09) 비율이 37.2%로 잔존.
+DWA가 localization 노이즈(수 cm)로 인한 경로 이탈을 과도하게 감지하여 매 DWA 계획 주기(200ms)마다
+최대 angular(0.1 rad/s)를 발행하는 현상이 지속됨.
+
+---
+
+#### 원인 B (심각) — rotate_cw 복구가 0.1 rad/s로 실행되어 비효율적
+
+`acc_lim_theta(0.5) × sim_period(1/5Hz=0.2s) = 0.1 rad/s` 제약으로 인해
+clearing_rotation도 최대 0.1 rad/s로만 실행됨.
+결과: 전체 항법 시간 241.9s 중 136.8s(57%)를 비효율적인 제자리 회전에 낭비.
+
+---
+
+#### 원인 C (심각) — oscillation_timeout=30s에도 elapsed 127.2s에서 조기 발동
+
+path_distance_bias=14.0 → angular 포화 반복 → DWA 위치 진동 → oscillation 카운터 조기 누적.
+`oscillation_distance=0.3m`를 저속(0.05 m/s) 전진 시 6초마다 채우는데,
+angular 포화 구간(37.2%)에서 실효 선속도가 0.01 m/s로 저하되어 카운터가 누적됨.
+
+---
+
+### 변경 내용
+
+#### 변경 1 — `local_planner_params.yaml`: path_distance_bias 추가 완화
+
+```yaml
+# 수정 전
+path_distance_bias: 14.0
+goal_distance_bias: 44.0
+
+# 수정 후 [#009]
+path_distance_bias: 8.0     # 14.0→8.0: angular 포화 37.2% 근본 원인 제거
+goal_distance_bias: 52.0    # 44.0→52.0: path 감소분 보완, 목표 방향 추종력 유지
+```
+
+**설계 근거**:
+- `path_distance_bias=8.0`은 DWA 비용 함수에서 경로 이탈 페널티를 낮춤
+- 소규모 localization 노이즈(수 cm)에 의한 경로 이탈이 angular 포화로 이어지는 연결 고리를 차단
+- `goal_distance_bias=52.0`으로 목표 방향 추종력을 강화하여 경로 이탈 보완
+
+---
+
+#### 변경 2 — `local_planner_params.yaml`: oscillation_reset_dist 0.1→0.15 유지·재확인
+
+```yaml
+oscillation_reset_dist: 0.15  # [#009] 0.1→0.15 재확인
+```
+
+저속(0.05 m/s) 전진 시 DWA 내부 진동 카운터 조기 누적 방지.
+
+---
+
+#### 변경 3 — `move_base_params.yaml`: clearing_rotation 비활성화
+
+```yaml
+# 수정 전
+clearing_rotation_allowed: true
+
+# 수정 후 [#009]
+clearing_rotation_allowed: false
+```
+
+**설계 근거**:
+- `acc_lim_theta × sim_period = 0.1 rad/s` 제약으로 clearing_rotation 실행 속도가 0.1 rad/s에 고착
+- 136.8초 회전 낭비를 제거하고 costmap_reset → global re-plan 경로로 더 빠른 복구 시도
+
+---
+
+#### 변경 4 — `move_base_params.yaml`: oscillation_timeout 30.0→60.0
+
+```yaml
+# 수정 전
+oscillation_timeout: 30.0
+
+# 수정 후 [#009]
+oscillation_timeout: 60.0
+```
+
+path_distance_bias 완화(14→8)와 병행하여 남은 oscillation false positive 억제.
+
+---
+
+#### 변경 5 — `move_base_params.yaml`: oscillation_distance 0.3→0.5
+
+```yaml
+# 수정 전
+oscillation_distance: 0.3
+
+# 수정 후 [#009]
+oscillation_distance: 0.5   # 0.05 m/s × 10s = 0.5m → 약 10초마다 카운터 초기화
+```
+
+저속 전진(0.05 m/s) 구간에서 oscillation 카운터 조기 누적 방지.
+
+---
+
+### 기대 효과
+
+| 항목 | 수정 전 (#008) | 기대값 (#009) |
+|------|----------------|---------------|
+| forward 중 angular 포화(|ω|≥0.09) 비율 | 37.2% | < 15% |
+| 첫 rotate_cw 발동 시각 | elapsed 127.2s | 발동 없음 또는 > 200s |
+| 총 rotate_cw 지속 시간 | 136.8s (57%) | < 10s (< 5%) |
+| 최종 stop 도달 여부 | elapsed 264s (aborted) | 목표 도달(success) |
+
+---
+
+### 검증 방법
+
+```bash
+# 다음 로그 파일의 통계 확인
+python3 - <<'EOF'
+import pandas as pd
+df = pd.read_csv("src/TR-200/woosh_bringup/logs/nav_cmd_$(날짜).csv")
+fwd = df[df['linear_m_s'] > 0.001]
+
+print(f"forward 중 angular 포화(|ω|≥0.09): {(fwd['angular_rad_s'].abs()>=0.09).mean()*100:.1f}%")
+print(f"rotate_cw 행 비율: {(df['direction']=='rotate_cw').mean()*100:.1f}%")
+print(f"첫 rotate_cw elapsed: {df[df['direction']=='rotate_cw']['elapsed_sec'].min():.1f}s")
+EOF
+```

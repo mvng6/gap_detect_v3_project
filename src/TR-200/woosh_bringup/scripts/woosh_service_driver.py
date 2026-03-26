@@ -1390,7 +1390,14 @@ class SmoothTwistController:
                 last_time = self._cmd_vel_last_time
                 if not got_cmd:
                     linear = self._cmd_vel_last_linear
-                    angular = self._cmd_vel_last_angular
+                    # hold-last angular 감쇠: DWA 발행 주기(200ms)의 2배(400ms) 초과 시
+                    # angular를 0으로 폴백하여 stale 각속도 포화 구간 연장 방지.
+                    # 250ms는 DWA 주기(200ms)와 너무 가까워 ROS 타이머 지터로 조기 발동 위험.
+                    # 400ms(2× 주기)로 설정 시 정상 DWA 흐름에서 발동되지 않음.
+                    if last_time is not None and (time.monotonic() - last_time) < 0.40:
+                        angular = self._cmd_vel_last_angular
+                    else:
+                        angular = 0.0
 
             if last_time is None:
                 # 아직 /cmd_vel 수신 없음 — 대기
