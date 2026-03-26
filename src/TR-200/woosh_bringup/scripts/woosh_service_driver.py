@@ -32,6 +32,7 @@ try:
     from woosh_utils import (
         clear_registered_sdk_owner,
         current_process_is_registered_owner,
+        find_foreign_sdk_owners,
         inspect_tcp_connections,
         log_sdk_owner,
         parse_connection_owners,
@@ -45,6 +46,7 @@ except ImportError:
     from woosh_utils import (
         clear_registered_sdk_owner,
         current_process_is_registered_owner,
+        find_foreign_sdk_owners,
         inspect_tcp_connections,
         log_sdk_owner,
         parse_connection_owners,
@@ -1170,6 +1172,36 @@ class SmoothTwistController:
     # -- 연결 / 초기화 --
 
     async def connect(self):
+        conflicts = find_foreign_sdk_owners(
+            self.robot_port,
+            target_ip=self.robot_ip,
+            ignore_pids={os.getpid()},
+        )
+        if conflicts:
+            summary = ", ".join(
+                f"pid={owner['pid']} proc={owner['proc']}" for owner in conflicts
+            )
+            for owner in conflicts:
+                rospy.logerr(
+                    "[SDK_OWNER] preflight_conflict pid=%s proc=%s raw=%s",
+                    owner["pid"],
+                    owner["proc"],
+                    owner["line"],
+                )
+            log_sdk_owner(
+                rospy.logerr,
+                "preflight_conflict",
+                self.OWNER_NAME,
+                self.robot_identity,
+                self.robot_ip,
+                self.robot_port,
+                self.CALLER_NAME,
+                note=summary,
+            )
+            raise RuntimeError(
+                f"기존 SDK owner 연결이 이미 존재합니다. 먼저 종료하세요: {summary}"
+            )
+
         log_sdk_owner(
             rospy.loginfo,
             "open_start",

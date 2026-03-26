@@ -128,3 +128,10 @@ def parse_connection_owners(lines):
                 "line": line,
             })
     return owners
+
+
+def find_foreign_sdk_owners(port, target_ip=None, ignore_pids=None):
+    """Return active SDK connection owners excluding ignored PIDs."""
+    ignore = {int(pid) for pid in (ignore_pids or []) if pid is not None}
+    owners = parse_connection_owners(inspect_tcp_connections(port, target_ip=target_ip))
+    return [owner for owner in owners if owner["pid"] not in ignore]
