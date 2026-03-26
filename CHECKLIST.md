@@ -29,8 +29,8 @@
 
 ## Phase 3: TF 정리
 
-- [ ] **P3-1** `static_tf.launch` 생성 (base_link→laser, z=0.25m)
-- [ ] **P3-2** `bringup.launch` 수정: sensor_bridge + cmd_vel_adapter + static_tf 통합
+- [x] **P3-1** `static_tf.launch` 생성 (base_link→laser, z=0.25m)
+- [x] **P3-2** `bringup.launch` 생성: sensor_bridge + cmd_vel_adapter + static_tf 통합
 - [ ] **P3-3** 검증: `rosrun tf view_frames` → frames.pdf 확인
 - [ ] **P3-4** 검증: odom→base_link→laser 체인 완성 확인
 
@@ -85,17 +85,17 @@
 
 ## Phase 8: move_base Navigation
 
-- [ ] **P8-1** `woosh_navigation_mb` 패키지 생성
-  - [ ] `CMakeLists.txt`, `package.xml` 작성
-- [ ] **P8-2** config 파일 작성
-  - [ ] `move_base_params.yaml` (controller_frequency: 5.0 Hz)
-  - [ ] `costmap_common_params.yaml` (robot_radius, inflation_radius)
-  - [ ] `global_costmap_params.yaml`
-  - [ ] `local_costmap_params.yaml`
-  - [ ] `global_planner_params.yaml` (navfn)
-  - [ ] `local_planner_params.yaml` (dwa_local_planner)
-- [ ] **P8-3** `navigation.launch` 생성 (localization_amcl + move_base)
-- [ ] **P8-4** `navigation.rviz` 생성 (costmap, path 표시)
+- [x] **P8-1** `woosh_navigation_mb` 패키지 생성
+  - [x] `CMakeLists.txt`, `package.xml` 작성
+- [x] **P8-2** config 파일 작성
+  - [x] `move_base_params.yaml` (controller_frequency: 5.0 Hz)
+  - [x] `costmap_common_params.yaml` (woosh_costmap 공유)
+  - [x] `global_costmap_params.yaml` (woosh_costmap 공유)
+  - [x] `local_costmap_params.yaml`
+  - [x] `global_planner_params.yaml` (navfn/Dijkstra)
+  - [x] `local_planner_params.yaml` (dwa_local_planner)
+- [x] **P8-3** `navigation.launch` 생성 (sensor_bridge + map_server + amcl + move_base + rviz)
+- [x] **P8-4** `navigation.rviz` 생성 (static map, global/local costmap, path, particle cloud, TF)
 - [ ] **P8-5** 검증: move_base 노드 기동 확인
 - [ ] **P8-6** 검증: global/local costmap 표시 확인
 - [ ] **P8-7** 검증: RViz 2D Nav Goal → 로봇 이동 확인

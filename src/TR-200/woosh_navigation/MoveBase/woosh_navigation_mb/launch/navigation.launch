@@ -1,0 +1,121 @@
+<?xml version="1.0"?>
+<!--
+  navigation.launch — Woosh TR-200 완전 Navigation 스택
+  ============================================================
+  포함 스택:
+    1. woosh_sensor_bridge  → /scan, /odom_raw, TF(odom→base_link, base_link→laser)
+    2. map_server           → /map (저장된 맵 파일)
+    3. amcl                 → TF(map→odom), /amcl_pose
+    4. move_base            → /cmd_vel, /move_base/goal
+    5. rviz                 → navigation.rviz
+
+  사용 예:
+    roslaunch woosh_navigation_mb navigation.launch \
+      robot_ip:=169.254.128.2 \
+      map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
+
+  검증:
+    rostopic echo /move_base/result
+    # RViz에서 2D Nav Goal 지정 후 로봇 이동 확인
+-->
+<launch>
+  <!-- 공통 -->
+  <arg name="robot_ip"   default="169.254.128.2" />
+  <arg name="robot_port" default="5480" />
+  <arg name="map_file"   default="/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml" />
+
+  <!-- TF 프레임 -->
+  <arg name="map_frame"   default="map" />
+  <arg name="odom_frame"  default="odom" />
+  <arg name="base_frame"  default="base_link" />
+  <arg name="laser_frame" default="laser" />
+
+  <!-- RViz -->
+  <arg name="launch_rviz"  default="true" />
+  <arg name="rviz_config"  default="$(find woosh_navigation_mb)/rviz/navigation.rviz" />
+
+  <!-- ============================================================
+       1. Sensor Bridge + 정적 TF (base_link→laser)
+          발행: /scan, /odom_raw, TF(odom→base_link), TF(base_link→laser)
+       ============================================================ -->
+  <include file="$(find woosh_sensor_bridge)/launch/sensor_bridge.launch">
+    <arg name="robot_ip"    value="$(arg robot_ip)" />
+    <arg name="robot_port"  value="$(arg robot_port)" />
+    <arg name="publish_tf"  value="true" />
+    <arg name="publish_hz"  value="10.0" />
+  </include>
+
+  <!-- ============================================================
+       2. map_server — 저장된 맵 파일 서비스
+          발행: /map (nav_msgs/OccupancyGrid)
+       ============================================================ -->
+  <node pkg="map_server" type="map_server" name="map_server"
+        args="$(arg map_file)" output="screen">
+    <param name="frame_id" value="$(arg map_frame)" />
+  </node>
+
+  <!-- ============================================================
+       3. AMCL — 파티클 필터 로컬리제이션
+          발행: TF(map→odom), /amcl_pose, /particlecloud
+       ============================================================ -->
+  <node pkg="amcl" type="amcl" name="amcl" output="screen">
+    <rosparam file="$(find woosh_slam_amcl)/config/amcl_params.yaml" command="load" />
+    <param name="odom_frame_id"   value="$(arg odom_frame)" />
+    <param name="base_frame_id"   value="$(arg base_frame)" />
+    <param name="global_frame_id" value="$(arg map_frame)" />
+    <param name="scan_topic"      value="/scan" />
+  </node>
+
+  <!-- ============================================================
+       4. move_base — 전역/지역 경로 계획 + 속도 명령 발행
+          구독: /move_base/goal, /scan, /odom, /map
+          발행: /cmd_vel, /move_base/result
+       ============================================================ -->
+  <node pkg="move_base" type="move_base" name="move_base"
+        respawn="false" output="screen">
+
+    <!-- 플래너 선택 -->
+    <param name="base_global_planner" value="navfn/NavfnROS" />
+    <param name="base_local_planner"  value="dwa_local_planner/DWAPlannerROS" />
+
+    <!-- move_base 공통 파라미터 -->
+    <rosparam file="$(find woosh_navigation_mb)/config/move_base_params.yaml"
+              command="load" />
+
+    <!-- Global Costmap -->
+    <rosparam file="$(find woosh_costmap)/config/costmap_common_params.yaml"
+              command="load" ns="global_costmap" />
+    <rosparam file="$(find woosh_costmap)/config/global_costmap_params.yaml"
+              command="load" ns="global_costmap" />
+    <param name="global_costmap/global_frame"     value="$(arg map_frame)" />
+    <param name="global_costmap/robot_base_frame" value="$(arg base_frame)" />
+
+    <!-- Local Costmap -->
+    <rosparam file="$(find woosh_costmap)/config/costmap_common_params.yaml"
+              command="load" ns="local_costmap" />
+    <rosparam file="$(find woosh_navigation_mb)/config/local_costmap_params.yaml"
+              command="load" ns="local_costmap" />
+    <param name="local_costmap/global_frame"     value="$(arg odom_frame)" />
+    <param name="local_costmap/robot_base_frame" value="$(arg base_frame)" />
+
+    <!-- Global Planner -->
+    <rosparam file="$(find woosh_navigation_mb)/config/global_planner_params.yaml"
+              command="load" />
+
+    <!-- Local Planner (DWA) -->
+    <rosparam file="$(find woosh_navigation_mb)/config/local_planner_params.yaml"
+              command="load" />
+
+    <!-- cmd_vel → Woosh SDK (cmd_vel_adapter가 없을 때 직접 연결 시 remap) -->
+    <!-- <remap from="cmd_vel" to="/cmd_vel" /> -->
+  </node>
+
+  <!-- ============================================================
+       5. RViz (선택적)
+       ============================================================ -->
+  <node if="$(arg launch_rviz)"
+        pkg="rviz" type="rviz" name="navigation_rviz"
+        args="-d $(arg rviz_config)"
+        output="screen" />
+
+</launch>

@@ -1,0 +1,65 @@
+# ================================================================
+# Local Costmap 파라미터 — Woosh TR-200
+# ================================================================
+# 로봇 주변 동적 장애물 감지용 Rolling Window 맵
+#
+# footprint 및 observation_sources는 woosh_costmap의
+# costmap_common_params.yaml을 공유하여 적재합니다.
+
+# ----------------------------------------------------------------
+# 프레임 설정
+# ----------------------------------------------------------------
+global_frame: odom          # local costmap은 odom 기준 (map 아님)
+robot_base_frame: base_link
+
+# ----------------------------------------------------------------
+# Rolling Window 설정
+# width/height: 3.0m — TR-200 최대속도(0.12m/s) 기준
+#   DWA sim_time(2.0s) × 최대속도(0.12m/s) = 0.24m → 3.0m는 충분한 여유
+# ----------------------------------------------------------------
+rolling_window: true
+width: 3.0                  # m
+height: 3.0                 # m
+resolution: 0.05            # m/cell (global과 동일)
+
+# ----------------------------------------------------------------
+# 업데이트 주기
+# controller_frequency(5Hz)와 맞춤
+# ----------------------------------------------------------------
+update_frequency: 5.0       # Hz
+publish_frequency: 2.0      # Hz (RViz 시각화용)
+always_send_full_costmap: false
+
+# ----------------------------------------------------------------
+# TF 허용 오차
+# ----------------------------------------------------------------
+transform_tolerance: 0.5
+
+# ----------------------------------------------------------------
+# 레이어 플러그인 (local은 static 레이어 불필요)
+# ----------------------------------------------------------------
+plugins:
+  - {name: obstacle_layer,  type: "costmap_2d::ObstacleLayer"}
+  - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
+
+obstacle_layer:
+  enabled: true
+  combination_method: 1
+  observation_sources: laser_scan
+
+  laser_scan:
+    topic: /scan
+    sensor_frame: laser
+    data_type: LaserScan
+    marking: true
+    clearing: true
+    min_obstacle_height: 0.0
+    max_obstacle_height: 2.0
+    obstacle_range: 3.0     # local은 근거리만 (global 6.0m보다 좁게)
+    raytrace_range: 4.0
+    inf_is_valid: false
+
+inflation_layer:
+  enabled: true
+  inflation_radius: 0.55    # global과 동일
+  cost_scaling_factor: 3.0
