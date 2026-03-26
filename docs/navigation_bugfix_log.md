@@ -20,6 +20,7 @@
 | 2026-03-26 | #007 | 버그수정 | #006 회귀 버그 — acc_lim_theta=0.15로 DWA 탐색 공간 붕괴 → 영구 stop 수정 | 완료 |
 | 2026-03-26 | #008 | 버그수정 | 전진 중 angular 진동 잔존(stdev=0.065, 반전7.9%) + clearing_rotation 재발(×2) 수정 | 완료 |
 | 2026-03-26 | #009 | 버그수정 | angular 포화 37.2% + rotate_cw 구간 57% 낭비 → path_distance_bias 추가 완화 + clearing_rotation 비활성화 | 완료 |
+| 2026-03-26 | #010 | 분석 | 장애물 안전 마진 확보용 costmap/DWA 파라미터 정리 | 완료 |
 
 ---
 
@@ -1417,3 +1418,191 @@ print(f"rotate_cw 행 비율: {(df['direction']=='rotate_cw').mean()*100:.1f}%")
 print(f"첫 rotate_cw elapsed: {df[df['direction']=='rotate_cw']['elapsed_sec'].min():.1f}s")
 EOF
 ```
+
+---
+
+---
+
+## #010 · 분석 · 장애물 안전 마진 확보용 costmap/DWA 파라미터 정리
+
+**작업 시각**: 2026-03-26
+**분류**: 원인 분석 / 튜닝 가이드
+**관련 파일**:
+- `src/TR-200/woosh_navigation/MoveBase/woosh_navigation_mb/launch/navigation.launch`
+- `src/TR-200/woosh_navigation/MoveBase/woosh_navigation_mb/config/local_planner_params.yaml`
+- `src/TR-200/woosh_navigation/Costmap/woosh_costmap/config/costmap_common_params.yaml`
+- `src/TR-200/woosh_navigation/Costmap/woosh_costmap/config/global_costmap_params.yaml`
+- `src/TR-200/woosh_navigation/MoveBase/woosh_navigation_mb/config/local_costmap_params.yaml`
+
+---
+
+### 현상
+
+`move_base_on` 또는 `navigation.launch` 기반 자율주행 시 전방에 장애물이 나타나거나 주변에 장애물이 있는 경우,
+로봇이 장애물과 너무 가까운 거리로 우회하며 지나가는 현상 확인.
+
+요구사항은 단순 충돌 회피가 아니라, 장애물에 대해 **일정 안전 거리(clearance)** 를 유지한 상태로
+보다 보수적으로 우회하는 것.
+
+---
+
+### 분석 결과
+
+#### 원인 A (최우선) — 안전 마진은 `woosh_service_driver.py`가 아니라 costmap + DWA 파라미터가 결정
+
+`navigation.launch`에서 `move_base` 실행 시 다음 3개 설정군이 함께 적재된다.
+
+1. `global_costmap` — 전역 경로가 벽/고정 장애물에서 얼마나 떨어질지 결정
+2. `local_costmap` — 근거리 동적 장애물 주변 비용 분포 결정
+3. `DWAPlannerROS` — 후보 trajectory 중 장애물에 가까운 경로를 얼마나 강하게 배제할지 결정
+
+즉, 안전 마진 문제는 서비스 드라이버 로직보다 **costmap inflation + DWA obstacle weight** 조정이 핵심이다.
+
+---
+
+#### 원인 B (심각) — `occdist_scale` 비중이 낮아 goal/path 우선 경향이 남아 있음
+
+현재 `local_planner_params.yaml`:
+
+```yaml
+path_distance_bias: 8.0
+goal_distance_bias: 52.0
+occdist_scale: 0.05
+```
+
+`#008`, `#009`에서 angular 포화와 oscillation을 줄이기 위해 경로 추종 민감도는 완화했지만,
+여전히 DWA 비용 함수에서 장애물 회피 가중치(`occdist_scale`)보다 목표 접근 성향이 강하면
+좁은 공간에서 장애물 가까운 trajectory를 선택할 수 있다.
+
+---
+
+#### 원인 C (심각) — footprint padding과 inflation 반경이 비교적 보수적으로 작음
+
+현재 설정:
+
+```yaml
+# costmap_common_params.yaml
+footprint_padding: 0.02
+
+# global_costmap_params.yaml / local_costmap_params.yaml
+inflation_radius: 0.55
+cost_scaling_factor: 3.0
+```
+
+이 조합은 충돌 방지는 가능하지만, 장애물 주변 고비용 구간이 충분히 넓지 않아
+planner가 "붙어서 통과 가능한 경로"를 여전히 유효한 후보로 평가할 수 있다.
+
+특히 `footprint_padding=0.02`는 로봇 외곽에 추가되는 안전 마진이 2cm 수준이라
+실제 운용 관점에서 여유가 작다.
+
+---
+
+#### 원인 D (참고) — `obstacle_range`, `raytrace_range`는 감지 범위이지 안전 거리 자체는 아님
+
+`obstacle_range`, `raytrace_range`는 LiDAR로 장애물을 어디까지 마킹/클리어링할지에 대한 범위 설정이다.
+장애물과 얼마나 떨어져 갈지를 늘리고 싶을 때의 1차 조정 대상은 아니다.
+
+---
+
+### 조치 방향
+
+#### 조치 1 — `occdist_scale` 상향으로 근접 trajectory 배제 강화
+
+```yaml
+# local_planner_params.yaml
+occdist_scale: 0.05   # 현재값
+```
+
+권장 시작값: `0.10 ~ 0.20`
+
+- 값을 올릴수록 DWA가 장애물 가까운 후보 trajectory를 더 강하게 기피
+- 전방에 갑자기 나타난 동적 장애물 회피 성능에 직접적 영향
+
+---
+
+#### 조치 2 — local/global `inflation_radius` 확대로 비용 완충 구간 확대
+
+```yaml
+# global_costmap_params.yaml / local_costmap_params.yaml
+inflation_radius: 0.55   # 현재값
+```
+
+권장 시작값: `0.65 ~ 0.75`
+
+- local costmap: 근거리 회피 시 장애물 주변을 더 넓게 위험 구간으로 간주
+- global costmap: 전역 경로 자체가 벽/장애물에서 더 떨어지도록 유도
+
+---
+
+#### 조치 3 — `cost_scaling_factor` 하향으로 장애물 주변 비용 감쇠 완만화
+
+```yaml
+# global_costmap_params.yaml / local_costmap_params.yaml
+cost_scaling_factor: 3.0   # 현재값
+```
+
+권장 시작값: `2.0 ~ 2.5`
+
+- 값을 낮추면 장애물에서 조금 떨어진 구간도 비용이 높게 유지됨
+- 결과적으로 planner가 "가깝지만 통과 가능한 길"보다 "조금 멀지만 여유 있는 길"을 선호
+
+---
+
+#### 조치 4 — `footprint_padding` 상향으로 로봇을 더 크게 간주
+
+```yaml
+# costmap_common_params.yaml
+footprint_padding: 0.02   # 현재값
+```
+
+권장 시작값: `0.04 ~ 0.06`
+
+- 로봇 외곽 전체에 균일한 안전 마진 부여
+- 가장 직관적인 안전거리 확보 방법이지만, 좁은 통로의 통과 가능성은 줄어들 수 있음
+
+---
+
+#### 조치 5 — 필요 시 `goal_distance_bias`를 소폭 완화
+
+```yaml
+# local_planner_params.yaml
+goal_distance_bias: 52.0   # 현재값
+```
+
+권장 검토 범위: `40.0 ~ 48.0`
+
+- 목표점으로 곧게 붙으려는 성향이 강할수록 장애물 가까운 우회가 발생할 수 있음
+- 다만 `path_distance_bias`는 `#008`, `#009`에서 angular 포화 억제를 위해 크게 낮춘 값이므로,
+  안전 마진 문제만으로 재상향하는 것은 회귀 위험이 있음
+
+---
+
+### 1차 권장 조합
+
+현 시점에서 회귀 위험을 상대적으로 적게 유지하면서 안전 마진을 늘리려면 다음 순서 권장:
+
+| 우선순위 | 파일 | 파라미터 | 현재값 | 1차 권장값 |
+|----------|------|----------|--------|------------|
+| 1 | `local_planner_params.yaml` | `occdist_scale` | `0.05` | `0.10` |
+| 2 | `local_costmap_params.yaml` | `inflation_radius` | `0.55` | `0.65` |
+| 3 | `global_costmap_params.yaml` | `inflation_radius` | `0.55` | `0.65` |
+| 4 | `local_costmap_params.yaml` / `global_costmap_params.yaml` | `cost_scaling_factor` | `3.0` | `2.5` |
+| 5 | `costmap_common_params.yaml` | `footprint_padding` | `0.02` | `0.04` |
+
+---
+
+### 주의사항
+
+- `inflation_radius`와 `footprint_padding`을 동시에 크게 올리면 좁은 복도/문 통과가 불가능해질 수 있음
+- `occdist_scale`를 과도하게 올리면 저속 진동 또는 회피 과민반응이 생길 수 있음
+- `goal_distance_bias` 조정은 목표 접근성 저하와 연동되므로 마지막 단계에서 검토 권장
+- 안전 마진 튜닝은 `#008`, `#009`의 angular 안정화 결과를 깨지 않도록 한 번에 하나씩 점진 적용 필요
+
+---
+
+### 검증 방법
+
+1. RViz에서 `global_costmap`, `local_costmap`, `local_plan`을 동시에 표시한다.
+2. 장애물 측면 통과 시 local plan이 inflation 영역 바깥으로 형성되는지 확인한다.
+3. 좁은 통로와 열린 공간을 각각 주행시켜 clearance 증가와 통과성 저하를 함께 확인한다.
+4. `nav_cmd_*.csv`를 기록해 angular 포화, stop 비율, 평균 선속도 회귀 여부를 같이 점검한다.
