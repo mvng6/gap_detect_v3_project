@@ -14,6 +14,7 @@
 | 2026-03-26 | #001 | 분석 | move_base_on 모드 가다 서다(Stop-and-Go) 원인 분석 | 완료 |
 | 2026-03-26 | #002 | 버그수정 | 이중 WebSocket 연결 충돌 해결 | 완료 |
 | 2026-03-26 | #003 | 버그수정 | await twist_req 블로킹으로 실질 제어 주기 저하 해결 | 완료 |
+| 2026-03-26 | #004 | 기능추가 | navigation 명령 속도 실시간 CSV 로깅 | 완료 |
 
 ---
 
@@ -466,6 +467,194 @@ rostopic hz /cmd_vel
 rosrun woosh_bringup woosh_service_driver.py amcl move_base_on map_file:=...
 rosservice call /mobile_move "{distance: 0.3}"
 ```
+
+---
+
+---
+
+## #004 · 기능추가 · navigation 명령 속도 실시간 CSV 로깅
+
+**작업 시각**: 2026-03-26
+**분류**: 기능 추가
+**수정 파일**: `src/TR-200/woosh_bringup/scripts/woosh_service_driver.py`
+**목적**: navigation 구동 중 실시간 명령 속도·회전 방향을 CSV 파일로 기록하여 제어 동작 사후 검증 데이터 확보
+
+---
+
+### 배경
+
+#002, #003으로 이중 WebSocket 충돌 및 블로킹 문제를 해결한 후, 실제 로봇에서 명령 속도가 어떻게 전달되었는지 정량적으로 검증할 수단이 없었다. 운행 후 CSV 파일을 분석하여 제어 주기 준수 여부, 속도 프로파일 형태, watchdog 발동 시점 등을 확인한다.
+
+---
+
+### 기록 대상
+
+| 제어 경로 | `source` 값 | 기록 시점 |
+|-----------|-------------|-----------|
+| Quintic 직선 이동 (`_move_exact_distance`) | `"quintic"` | `_fire_twist()` 및 정지 명령 `_send_twist()` 호출마다 |
+| move_base cmd_vel 패스스루 (`_control_loop`) | `"cmd_vel"` | `_fire_twist()` 호출마다 (20Hz) |
+
+---
+
+### 변경 내용
+
+#### 변경 1 — `import csv` 추가
+
+```python
+import csv
+```
+
+---
+
+#### 변경 2 — `NavCsvLogger` 클래스 신규 추가
+
+```python
+class NavCsvLogger:
+    FIELDNAMES = [
+        "timestamp", "elapsed_sec",
+        "source", "linear_m_s", "angular_rad_s",
+        "direction", "odom_x", "odom_y",
+    ]
+```
+
+- **저장 경로**: `src/TR-200/woosh_bringup/logs/nav_cmd_YYYYMMDD_HHMMSS.csv`
+- **파일 생성**: 노드 시작 시 자동 생성, 디렉터리 없으면 `os.makedirs`로 자동 생성
+- **버퍼링**: `buffering=1` (라인 단위 즉시 flush) — 노드 강제 종료 시에도 데이터 보존
+- **thread-safe**: `Lock` 으로 보호
+- **direction 판정 로직** (`_direction_label`):
+
+| 조건 | direction |
+|------|-----------|
+| `\|linear\| < 0.001` and `\|angular\| < 0.001` | `stop` |
+| `\|linear\| >= 0.001`, linear > 0 | `forward` |
+| `\|linear\| >= 0.001`, linear < 0 | `backward` |
+| linear 정지, angular > 0 | `rotate_ccw` |
+| linear 정지, angular < 0 | `rotate_cw` |
+
+---
+
+#### 변경 3 — `SmoothTwistController.__init__` 로거 초기화
+
+```python
+# 명령 속도 CSV 로거
+self._csv_logger = NavCsvLogger()
+```
+
+---
+
+#### 변경 4 — `_log_cmd` 헬퍼 메서드 추가
+
+```python
+def _log_cmd(self, source, linear, angular):
+    with self._odom_lock:
+        odom = self._odom_pose
+    odom_x = odom[0] if odom is not None else None
+    odom_y = odom[1] if odom is not None else None
+    self._csv_logger.log(source, linear, angular, odom_x, odom_y)
+```
+
+현재 `/odom` 위치를 함께 기록하여 속도-위치 연계 분석을 가능하게 한다.
+
+---
+
+#### 변경 5 — `_send_twist` / `_fire_twist` `_source` 파라미터 추가 및 로그 호출
+
+```python
+# 수정 전
+async def _send_twist(self, linear=0.0, angular=0.0):
+    ...
+def _fire_twist(self, linear=0.0, angular=0.0):
+    ...
+
+# 수정 후
+async def _send_twist(self, linear=0.0, angular=0.0, _source="quintic"):
+    self._log_cmd(_source, linear, angular)
+    ...
+def _fire_twist(self, linear=0.0, angular=0.0, _source="quintic"):
+    self._log_cmd(_source, linear, angular)
+    ...
+```
+
+기존 호출부는 `_source` 기본값(`"quintic"`)으로 하위 호환 유지.
+
+---
+
+#### 변경 6 — `_control_loop` cmd_vel 패스스루 source 지정
+
+```python
+# 수정 전
+self._fire_twist(linear, angular)
+
+# 수정 후
+self._fire_twist(linear, angular, _source="cmd_vel")
+```
+
+---
+
+#### 변경 7 — `run()` 종료 시 로거 close
+
+```python
+async def run(self):
+    await self.connect()
+    try:
+        await self._control_loop()
+    finally:
+        self._csv_logger.close()
+```
+
+노드 정상/비정상 종료 모두에서 파일이 닫히도록 `finally` 처리.
+
+---
+
+### CSV 컬럼 정의
+
+| 컬럼 | 타입 | 설명 |
+|------|------|------|
+| `timestamp` | float | Unix 절대 시각 (초, 소수점 4자리) |
+| `elapsed_sec` | float | 로거 시작부터 경과 시간 (초) |
+| `source` | str | 명령 출처: `quintic` \| `cmd_vel` |
+| `linear_m_s` | float | 선속도 (m/s, 양수=전진, 음수=후진) |
+| `angular_rad_s` | float | 각속도 (rad/s, 양수=좌회전, 음수=우회전) |
+| `direction` | str | `forward` \| `backward` \| `rotate_ccw` \| `rotate_cw` \| `stop` |
+| `odom_x` | float | `/odom` 기준 현재 x 위치 (m, 없으면 빈 값) |
+| `odom_y` | float | `/odom` 기준 현재 y 위치 (m, 없으면 빈 값) |
+
+---
+
+### 활용 방법
+
+```bash
+# 로그 파일 위치 확인
+ls src/TR-200/woosh_bringup/logs/
+
+# Python으로 간단 분석 예시
+python3 - <<'EOF'
+import pandas as pd
+df = pd.read_csv("src/TR-200/woosh_bringup/logs/nav_cmd_YYYYMMDD_HHMMSS.csv")
+
+# source별 선속도 통계
+print(df.groupby("source")["linear_m_s"].describe())
+
+# cmd_vel 실효 주기 (간격 평균)
+cmd = df[df["source"] == "cmd_vel"].copy()
+cmd["dt"] = cmd["elapsed_sec"].diff()
+print("cmd_vel 평균 주기(ms):", cmd["dt"].mean() * 1000)
+
+# stop 명령 발생 시점
+print(df[df["direction"] == "stop"][["elapsed_sec", "source"]])
+EOF
+```
+
+---
+
+### 검증 포인트
+
+| 항목 | 확인 방법 |
+|------|-----------|
+| Quintic 프로파일 형태 | `source=="quintic"` 행의 `linear_m_s` 시계열이 종 모양(bell curve) 여부 |
+| cmd_vel 실효 주기 | `source=="cmd_vel"` 행 간격 평균이 ~50ms(20Hz) 달성 여부 |
+| watchdog 발동 시점 | `direction=="stop"` + `source=="cmd_vel"` 연속 구간 탐색 |
+| 정지 명령 정상 전달 | 이동 종료 후 `linear_m_s==0.0` 레코드 5개 이상 연속 확인 |
 
 ---
 

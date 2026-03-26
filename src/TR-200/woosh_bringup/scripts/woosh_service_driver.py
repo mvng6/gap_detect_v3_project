@@ -3,6 +3,7 @@
 
 import rospy
 import asyncio
+import csv
 import math
 import numpy as np
 import sys
@@ -828,6 +829,84 @@ class StackLauncher:
 
 
 # ---------------------------------------------------------------------------
+# Navigation 명령 속도 CSV 로거
+# ---------------------------------------------------------------------------
+
+class NavCsvLogger:
+    """navigation 구동 중 실시간 명령 속도·회전 방향을 CSV 파일로 기록한다.
+
+    컬럼:
+        timestamp      - Unix 절대 시각 (초, 소수점 4자리)
+        elapsed_sec    - 로거 시작부터의 경과 시간 (초)
+        source         - 명령 출처: "quintic" (직선 이동) | "cmd_vel" (move_base 패스스루)
+        linear_m_s     - 선속도 (m/s, 양수=전진, 음수=후진)
+        angular_rad_s  - 각속도 (rad/s, 양수=좌회전, 음수=우회전)
+        direction      - forward | backward | rotate_ccw | rotate_cw | stop
+        odom_x         - /odom 기준 현재 x 위치 (m, 없으면 빈 값)
+        odom_y         - /odom 기준 현재 y 위치 (m, 없으면 빈 값)
+    """
+
+    FIELDNAMES = [
+        "timestamp", "elapsed_sec",
+        "source", "linear_m_s", "angular_rad_s",
+        "direction", "odom_x", "odom_y",
+    ]
+    _LIN_THRESH = 0.001  # m/s — 정지 판정 임계값
+    _ANG_THRESH = 0.001  # rad/s
+
+    def __init__(self, log_dir=None):
+        if log_dir is None:
+            log_dir = os.path.abspath(os.path.join(script_dir, "..", "logs"))
+        os.makedirs(log_dir, exist_ok=True)
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        self._log_path = os.path.join(log_dir, f"nav_cmd_{ts}.csv")
+
+        # buffering=1: 라인 단위 즉시 flush → 노드 강제 종료 시에도 데이터 보존
+        self._file = open(self._log_path, "w", newline="", buffering=1)
+        self._writer = csv.DictWriter(self._file, fieldnames=self.FIELDNAMES)
+        self._writer.writeheader()
+        self._lock = Lock()
+        self._start_time = time.monotonic()
+        rospy.loginfo("[NavCsvLogger] 명령 속도 로그 시작: %s", self._log_path)
+
+    @staticmethod
+    def _direction_label(linear, angular):
+        lin_moving = abs(linear) >= NavCsvLogger._LIN_THRESH
+        ang_moving = abs(angular) >= NavCsvLogger._ANG_THRESH
+        if not lin_moving and not ang_moving:
+            return "stop"
+        if lin_moving:
+            return "forward" if linear > 0 else "backward"
+        return "rotate_ccw" if angular > 0 else "rotate_cw"
+
+    def log(self, source, linear, angular, odom_x=None, odom_y=None):
+        """명령 속도 한 샘플을 CSV에 기록한다 (thread-safe)."""
+        now = time.time()
+        elapsed = time.monotonic() - self._start_time
+        row = {
+            "timestamp":      f"{now:.4f}",
+            "elapsed_sec":    f"{elapsed:.4f}",
+            "source":         source,
+            "linear_m_s":     f"{linear:.6f}",
+            "angular_rad_s":  f"{angular:.6f}",
+            "direction":      self._direction_label(linear, angular),
+            "odom_x":         f"{odom_x:.4f}" if odom_x is not None else "",
+            "odom_y":         f"{odom_y:.4f}" if odom_y is not None else "",
+        }
+        with self._lock:
+            self._writer.writerow(row)
+
+    def close(self):
+        with self._lock:
+            try:
+                self._file.close()
+            except Exception:
+                pass
+        rospy.loginfo("[NavCsvLogger] 로그 저장 완료: %s", self._log_path)
+
+
+# ---------------------------------------------------------------------------
 # 모션 프로파일 (모바일 로봇의 부드러운 가감속)
 # ---------------------------------------------------------------------------
 
@@ -901,6 +980,9 @@ class SmoothTwistController:
 
         # 비블로킹 twist 전송 태스크 추적 (WebSocket RTT 블로킹 방지용)
         self._pending_send_task = None
+
+        # 명령 속도 CSV 로거
+        self._csv_logger = NavCsvLogger()
 
     # -- odom 콜백 --
 
@@ -1113,16 +1195,26 @@ class SmoothTwistController:
         total_time = self.QUINTIC_PEAK_VELOCITY_RATIO * abs_distance / self.max_speed
         return np.clip(total_time, 0.3, 30.0)
 
-    async def _send_twist(self, linear=0.0, angular=0.0):
+    def _log_cmd(self, source, linear, angular):
+        """현재 odom 위치와 함께 명령 속도를 CSV 로거에 기록한다."""
+        with self._odom_lock:
+            odom = self._odom_pose
+        odom_x = odom[0] if odom is not None else None
+        odom_y = odom[1] if odom is not None else None
+        self._csv_logger.log(source, linear, angular, odom_x, odom_y)
+
+    async def _send_twist(self, linear=0.0, angular=0.0, _source="quintic"):
+        self._log_cmd(_source, linear, angular)
         await self.robot.twist_req(Twist(linear=linear, angular=angular), NO_PRINT, NO_PRINT)
 
-    def _fire_twist(self, linear=0.0, angular=0.0):
+    def _fire_twist(self, linear=0.0, angular=0.0, _source="quintic"):
         """twist_req를 백그라운드 asyncio 태스크로 발행한다.
 
         await 없이 호출하므로 WebSocket RTT(~100ms)가 제어 루프 주기에 영향을 주지 않는다.
         이전 태스크가 아직 완료되지 않았으면 취소 후 최신 명령으로 교체한다(최신 명령 우선).
         정지 명령 등 완료를 보장해야 하는 경우에는 _send_twist(await)를 직접 사용한다.
         """
+        self._log_cmd(_source, linear, angular)
         if self._pending_send_task is not None and not self._pending_send_task.done():
             self._pending_send_task.cancel()
         self._pending_send_task = asyncio.ensure_future(
@@ -1317,12 +1409,15 @@ class SmoothTwistController:
             else:
                 _watchdog_fired = False
 
-            self._fire_twist(linear, angular)   # 비블로킹: WebSocket RTT가 루프 주기에 영향 없음
+            self._fire_twist(linear, angular, _source="cmd_vel")   # 비블로킹: WebSocket RTT가 루프 주기에 영향 없음
             await asyncio.sleep(period_cmdvel)
 
     async def run(self):
         await self.connect()
-        await self._control_loop()
+        try:
+            await self._control_loop()
+        finally:
+            self._csv_logger.close()
 
 
 # ---------------------------------------------------------------------------
