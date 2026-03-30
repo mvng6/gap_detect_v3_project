@@ -12,7 +12,7 @@
   사용 예:
     roslaunch woosh_navigation_mb navigation.launch \
       robot_ip:=169.254.128.2 \
-      map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
+      map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.yaml
 
   검증:
     rostopic echo /move_base/result

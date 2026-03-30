@@ -313,6 +313,44 @@ rosrun woosh_bringup woosh_service_driver.py amcl \
 
 > 자세한 내용은 [`src/TR-200/woosh_navigation/AMCL/docs/amcl_guide.md`](src/TR-200/woosh_navigation/AMCL/docs/amcl_guide.md)를 참조하세요.
 
+### Navigation 테스트 (AMCL + move_base)
+
+AMCL 로컬리제이션과 move_base 자율 내비게이션을 함께 테스트하는 최소 구성입니다.
+
+**터미널 1:**
+```bash
+docker exec -it noetic_robot_system_ws bash
+cd /root/catkin_ws && source devel/setup.bash
+roscore
+```
+
+**터미널 2:**
+```bash
+docker exec -it noetic_robot_system_ws bash
+cd /root/catkin_ws && source devel/setup.bash
+rosrun woosh_bringup woosh_service_driver.py amcl move_base_on \
+  map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
+```
+
+이 명령 하나로 다음이 한번에 실행됩니다:
+- 로봇 WebSocket 연결 (`/mobile_move` 서비스)
+- AMCL 로컬리제이션 (`woosh_map.yaml` 기반 위치 추정)
+- move_base 자율 내비게이션 (navfn + DWA + cmd_vel passthrough)
+- RViz 시각화
+
+**RViz에서 내비게이션 동작 순서:**
+1. **2D Pose Estimate** 버튼 → 맵에서 로봇의 현재 위치와 방향을 클릭+드래그로 지정
+2. `/particlecloud` 파티클이 수렴하는지 확인
+3. **2D Nav Goal** 버튼 → 목표 위치와 방향 지정
+4. 로봇이 자율 주행하는지 확인
+
+**검증 토픽:**
+```bash
+rostopic echo /move_base/result   # 내비게이션 결과
+rostopic echo /amcl_pose          # AMCL 위치 추정
+rostopic echo /cmd_vel            # 속도 명령 발행 여부
+```
+
 ### 두산 협동로봇
 
 ```bash
