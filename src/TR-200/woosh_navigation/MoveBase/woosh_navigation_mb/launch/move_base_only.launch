@@ -3,10 +3,10 @@
   move_base_only.launch — move_base 단독 실행용
   ============================================================
   woosh_service_driver.py가 이미 아래를 실행 중인 환경에서 사용:
-    - woosh_sensor_bridge  (sensor_bridge 실행 중)
+    - SmoothTwistController SDK owner (/scan, /odom, /odom_raw, TF 발행 중)
     - map_server           (AMCL/carto_loc launch에 포함)
     - AMCL / Cartographer  (TF map→odom 발행 중)
-    - cmd_vel_adapter      (move_base_on 플래그로 자동 기동)
+    - cmd_vel passthrough  (move_base_on 플래그로 자동 활성화)
 
   이 파일은 woosh_service_driver.py의 move_base_on 플래그에서
   자동으로 호출됩니다. 직접 실행 시:

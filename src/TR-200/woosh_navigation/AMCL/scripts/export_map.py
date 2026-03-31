@@ -27,9 +27,13 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WOOSH_ROBOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../../woosh_robot_py"))
 if WOOSH_ROBOT_DIR not in sys.path:
     sys.path.insert(0, WOOSH_ROBOT_DIR)
+WOOSH_UTILS_SRC_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../../woosh_utils/src"))
+if WOOSH_UTILS_SRC_DIR not in sys.path:
+    sys.path.insert(0, WOOSH_UTILS_SRC_DIR)
 
 from woosh_robot import WooshRobot  # noqa: E402
 from woosh_interface import CommuSettings, NO_PRINT  # noqa: E402
+from woosh_utils import log_sdk_owner  # noqa: E402
 from woosh.proto.map.map_pack_pb2 import SceneData  # noqa: E402
 from woosh.proto.robot.robot_pb2 import RobotInfo  # noqa: E402
 
@@ -135,9 +139,27 @@ async def run(robot_ip, robot_port, output_dir, map_name, scene_name_override, m
     )
     robot = WooshRobot(settings)
 
+    log_sdk_owner(
+        rospy.loginfo,
+        "open_start",
+        "export_map",
+        "map_exporter",
+        robot_ip,
+        robot_port,
+        "export_map.py:run",
+    )
     ok = await robot.run()
     if not ok:
         raise RuntimeError("Woosh SDK 연결 실패.")
+    log_sdk_owner(
+        rospy.loginfo,
+        "open_established",
+        "export_map",
+        "map_exporter",
+        robot_ip,
+        robot_port,
+        "export_map.py:run",
+    )
 
     info, ok, msg = await robot.robot_info_req(RobotInfo(), NO_PRINT, NO_PRINT)
     if not ok:
@@ -177,7 +199,25 @@ async def run(robot_ip, robot_port, output_dir, map_name, scene_name_override, m
     os.makedirs(output_dir, exist_ok=True)
     success = _save_pgm_and_yaml(selected_map, output_dir, map_name)
 
+    log_sdk_owner(
+        rospy.loginfo,
+        "close_start",
+        "export_map",
+        "map_exporter",
+        robot_ip,
+        robot_port,
+        "export_map.py:run",
+    )
     await robot.stop()
+    log_sdk_owner(
+        rospy.loginfo,
+        "close_complete",
+        "export_map",
+        "map_exporter",
+        robot_ip,
+        robot_port,
+        "export_map.py:run",
+    )
     return success
 
 

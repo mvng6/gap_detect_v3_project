@@ -18,15 +18,23 @@ DWAPlannerROS:
   min_vel_trans: 0.01
 
   max_vel_theta: 0.5          # rad/s — cmd_vel_adapter max_angular와 동일
-  min_vel_theta: 0.05         # rad/s — 너무 낮으면 회전 정체
+  min_vel_theta: 0.01         # rad/s — 미세 각도 보정 허용 (0.05→0.01: 불감대 제거)
 
   # --------------------------------------------------------------
   # 가속도 한계
-  # WebSocket 지연(100ms) → 느린 가속도로 오버슈팅 방지
+  # acc_lim_theta 설계 원칙 (acc_lim_theta=0.15 사용 금지):
+  #   DWA는 매 계획 주기(sim_period=1/5Hz=0.2s)마다
+  #   현재 속도 ± (acc_lim_theta × sim_period) 범위만 샘플링.
+  #     acc_lim_theta=0.15 → 샘플 가능 angular ±0.03 rad/s
+  #     → 방향 전환이 조금이라도 필요하면 모든 forward trajectory가
+  #       stop(0,0)보다 path_cost가 높아져 DWA가 영구 stop 출력
+  #     → oscillation_timeout(10s) → clearing_rotation 루프 진입
+  #   angular 포화 억제는 path_distance_bias=22.0이 담당.
+  #   acc_lim_theta는 DWA 탐색 공간 크기를 보장하는 값(0.5)으로 유지.
   # --------------------------------------------------------------
   acc_lim_x: 0.3              # m/s²
   acc_lim_y: 0.0
-  acc_lim_theta: 0.5          # rad/s²
+  acc_lim_theta: 0.5          # rad/s² — DWA 샘플 가능 angular ±0.10 rad/s 보장
 
   # --------------------------------------------------------------
   # 시뮬레이션 파라미터
@@ -54,13 +62,40 @@ DWAPlannerROS:
 
   # --------------------------------------------------------------
   # 비용 가중치
+  # path_distance_bias 완화 배경:
+  #   - AMCL/Carto localization 노이즈(수 cm) + path_distance_bias=32 조합 →
+  #     DWA가 경로 좌/우 미세 오차에도 max angular(-0.1 rad/s) 포화 출력
+  #   - 로봇이 전진 중 지속적으로 각속도 포화 → 실효 선속도 0.01 m/s 수준 저하
+  #   - CSV 로그(nav_cmd_20260326_064807) 에서 6,860행 중 angular=-0.1 포화 지배적,
+  #     선속도 최대 0.05 m/s에서 정체, 이후 DWA oscillation recovery(+0.5 rad/s) 발동 확인
+  #
+  # path_distance_bias 추가 완화 (22.0→14.0) 배경 [#008]:
+  #   - nav_cmd_20260326_073753.csv: 전진 중 angular stdev=0.065, 부호 반전 7.9%
+  #     → localization 노이즈로 DWA가 여전히 지속 L/R 미세 진동 발생
+  #   - 결과: 각도 오차 누적 → DWA 제자리 CCW 회전 돌입(+0.1 rad/s, 20s) → clearing_rotation 2회
+  #   - acc_lim_theta(0.5) × sim_period(0.2s) = 0.1 rad/s: DWA가 정지 출발 시
+  #     최대 ±0.1 rad/s만 샘플링 가능 → 제자리 회전 속도가 0.1 rad/s로 고착
+  #   - goal_distance_bias를 36→44로 상향해 DWA가 목표 방향으로
+  #     적극 회전 선택하도록 유도 (path_cost < goal_cost → 빠른 각속도 선택)
+  #
+  # path_distance_bias 추가 완화 (14.0→8.0) 배경 [#009]:
+  #   - nav_cmd_20260326_075507.csv: forward 중 angular 포화(|ω|≥0.09) 비율 37.2%
+  #     → 여전히 DWA가 localization 노이즈에 과민 반응하여 강한 방향 보정 지속
+  #   - 첫 rotate_cw 발동이 elapsed 127.2s (oscillation_timeout=30s 설정에도 조기 발동)
+  #   - 총 rotate_cw 구간: 136.8s / 241.9s = 57% → 전체 시간 절반 이상 제자리 회전
+  #   - path_distance_bias 추가 완화로 DWA의 경로 이탈 감지 민감도를 낮춰
+  #     angular 포화 빈도를 근본적으로 줄이는 것이 최우선
   # --------------------------------------------------------------
-  path_distance_bias: 32.0    # 전역 경로 추종 강도 (높을수록 경로에 붙음)
-  goal_distance_bias: 24.0    # 목표 접근 강도
-  occdist_scale: 0.02         # 장애물 회피 강도
+  path_distance_bias: 8.0     # 전역 경로 추종 강도 (32.0→22.0→14.0→8.0: localization 노이즈 내성)
+  goal_distance_bias: 52.0    # 목표 접근 강도 (44.0→52.0: path 감소분 보완)
+  occdist_scale: 0.2          # 장애물 회피 강도
 
   # --------------------------------------------------------------
   # 정지 판단
   # --------------------------------------------------------------
   stop_time_buffer: 0.2       # 초 — 장애물 전 정지 여유 시간
-  oscillation_reset_dist: 0.05  # m — 진동 카운터 초기화 이동 거리
+  oscillation_reset_dist: 0.15  # m — 진동 카운터 초기화 이동 거리
+                                #     (0.05→0.15: 합성 오도메트리 부정확 보완,
+                                #      가짜 oscillation 감지로 인한 clearing_rotation 복구 방지)
+                                #     [#009] 0.1→0.15 재확인: 저속(0.05m/s) 전진 시
+                                #      DWA 내부 oscillation 카운터 조기 누적 방지

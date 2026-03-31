@@ -42,9 +42,13 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WOOSH_ROBOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../woosh_robot_py"))
 if WOOSH_ROBOT_DIR not in sys.path:
     sys.path.insert(0, WOOSH_ROBOT_DIR)
+WOOSH_UTILS_SRC_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../woosh_utils/src"))
+if WOOSH_UTILS_SRC_DIR not in sys.path:
+    sys.path.insert(0, WOOSH_UTILS_SRC_DIR)
 
 from woosh_robot import WooshRobot  # noqa: E402
 from woosh_interface import CommuSettings, NO_PRINT  # noqa: E402
+from woosh_utils import log_sdk_owner  # noqa: E402
 from woosh.proto.map.map_pack_pb2 import SceneData  # noqa: E402
 from woosh.proto.robot.robot_pb2 import (  # noqa: E402
     Model,
@@ -189,6 +193,16 @@ class WooshRvizDebugNode:
         rospy.logwarn("Woosh SDK 연결이 끊어졌습니다. RViz 디버그 데이터 수신을 기다리는 중입니다.")
 
     async def connect(self):
+        log_sdk_owner(
+            rospy.loginfo,
+            "open_start",
+            "WooshRvizDebugNode",
+            self.robot_identity,
+            self.robot_ip,
+            self.robot_port,
+            "woosh_rviz_debug.py:WooshRvizDebugNode.connect",
+            note="standalone_rviz_debug",
+        )
         settings = CommuSettings(
             addr=self.robot_ip,
             port=self.robot_port,
@@ -215,6 +229,16 @@ class WooshRvizDebugNode:
             info.scene.scene_name,
             info.scene.map_name,
             info.scene.map_id,
+        )
+        log_sdk_owner(
+            rospy.loginfo,
+            "open_established",
+            "WooshRvizDebugNode",
+            self.robot_identity,
+            self.robot_ip,
+            self.robot_port,
+            "woosh_rviz_debug.py:WooshRvizDebugNode.connect",
+            note="standalone_rviz_debug",
         )
 
         self._update_scene_state(info.scene)
@@ -1018,10 +1042,28 @@ class WooshRvizDebugNode:
 
     async def shutdown(self):
         if self.robot is not None:
+            log_sdk_owner(
+                rospy.loginfo,
+                "close_start",
+                "WooshRvizDebugNode",
+                self.robot_identity,
+                self.robot_ip,
+                self.robot_port,
+                "woosh_rviz_debug.py:WooshRvizDebugNode.shutdown",
+            )
             try:
                 await self.robot.stop()
             except Exception as exc:
                 rospy.logwarn("SDK 종료 중 예외: %s", exc)
+            log_sdk_owner(
+                rospy.loginfo,
+                "close_complete",
+                "WooshRvizDebugNode",
+                self.robot_identity,
+                self.robot_ip,
+                self.robot_port,
+                "woosh_rviz_debug.py:WooshRvizDebugNode.shutdown",
+            )
 
 
 def main():

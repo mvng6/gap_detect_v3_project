@@ -214,7 +214,7 @@ class RobotCommunication:
             topic = msg.DESCRIPTOR.full_name
             self._print_message("REQ", topic, msg, req_ppl)
 
-            self.logger.info(f"Sending request: {topic}")
+            self.logger.debug(f"Sending request: {topic}")
             response = await self._ws.send(topic, msg)
 
             resp_msg = None
@@ -226,7 +226,7 @@ class RobotCommunication:
             self._print_message("RSP", topic, resp_msg, rep_ppl)
 
             if response.ok:
-                self.logger.info(f"Request completed successfully: {topic}")
+                self.logger.debug(f"Request completed successfully: {topic}")
             else:
                 self.logger.error(f"Request failed: {response.msg}")
 

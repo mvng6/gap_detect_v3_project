@@ -38,9 +38,13 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 WOOSH_ROBOT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../woosh_robot_py"))
 if WOOSH_ROBOT_DIR not in sys.path:
     sys.path.insert(0, WOOSH_ROBOT_DIR)
+WOOSH_UTILS_SRC_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, "../../woosh_utils/src"))
+if WOOSH_UTILS_SRC_DIR not in sys.path:
+    sys.path.insert(0, WOOSH_UTILS_SRC_DIR)
 
 from woosh_robot import WooshRobot  # noqa: E402
 from woosh_interface import CommuSettings, NO_PRINT  # noqa: E402
+from woosh_utils import log_sdk_owner  # noqa: E402
 from woosh.proto.robot.robot_pb2 import PoseSpeed, RobotInfo, ScannerData  # noqa: E402
 
 
@@ -187,6 +191,16 @@ class WooshSensorBridgeNode:
         )
 
     async def connect(self):
+        log_sdk_owner(
+            rospy.loginfo,
+            "open_start",
+            "WooshSensorBridgeNode",
+            self.robot_identity,
+            self.robot_ip,
+            self.robot_port,
+            "woosh_sensor_bridge.py:WooshSensorBridgeNode.connect",
+            note="standalone_sensor_bridge",
+        )
         settings = CommuSettings(
             addr=self.robot_ip,
             port=self.robot_port,
@@ -223,6 +237,16 @@ class WooshSensorBridgeNode:
                 info.scene.scene_name,
                 info.scene.map_name,
             )
+        log_sdk_owner(
+            rospy.loginfo,
+            "open_established",
+            "WooshSensorBridgeNode",
+            self.robot_identity,
+            self.robot_ip,
+            self.robot_port,
+            "woosh_sensor_bridge.py:WooshSensorBridgeNode.connect",
+            note="standalone_sensor_bridge",
+        )
 
         # 초기 포즈·스캔 데이터로 상태 초기화
         if info.pose_speed:
@@ -348,10 +372,28 @@ class WooshSensorBridgeNode:
 
     async def shutdown(self):
         if self.robot is not None:
+            log_sdk_owner(
+                rospy.loginfo,
+                "close_start",
+                "WooshSensorBridgeNode",
+                self.robot_identity,
+                self.robot_ip,
+                self.robot_port,
+                "woosh_sensor_bridge.py:WooshSensorBridgeNode.shutdown",
+            )
             try:
                 await self.robot.stop()
             except Exception as exc:
                 rospy.logwarn("SDK 종료 중 예외: %s", exc)
+            log_sdk_owner(
+                rospy.loginfo,
+                "close_complete",
+                "WooshSensorBridgeNode",
+                self.robot_identity,
+                self.robot_ip,
+                self.robot_port,
+                "woosh_sensor_bridge.py:WooshSensorBridgeNode.shutdown",
+            )
 
 
 def main():

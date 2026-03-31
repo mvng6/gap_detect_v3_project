@@ -94,12 +94,18 @@
   - [x] `local_costmap_params.yaml`
   - [x] `global_planner_params.yaml` (navfn/Dijkstra)
   - [x] `local_planner_params.yaml` (dwa_local_planner)
-- [x] **P8-3** `navigation.launch` 생성 (sensor_bridge + map_server + amcl + move_base + rviz)
-- [x] **P8-4** `navigation.rviz` 생성 (static map, global/local costmap, path, particle cloud, TF)
-- [ ] **P8-5** 검증: move_base 노드 기동 확인
-- [ ] **P8-6** 검증: global/local costmap 표시 확인
-- [ ] **P8-7** 검증: RViz 2D Nav Goal → 로봇 이동 확인
-- [ ] **P8-8** 검증: `rostopic echo /move_base/result` SUCCESS 확인
+- [x] **P8-3** `move_base_only.launch` 생성 (move_base 단독, localization은 외부에서 기동)
+- [x] **P8-4** `navigation.launch` 생성 (sensor_bridge + map_server + amcl + move_base + rviz)
+- [x] **P8-5** `navigation.rviz` 생성 (static map, global/local costmap, path, particle cloud, TF)
+- [x] **P8-6** `woosh_service_driver.py`: `move_base_on` CLI 플래그 구현
+  - [x] `start_move_base()` 메서드 구현 (`move_base_only.launch` 호출)
+  - [x] `start_cmd_vel_adapter()` 메서드 구현 (move_base `/cmd_vel` → Woosh SDK)
+  - [x] `move_base_on` + localization 유효성 검사 (SLAM 모드와 상호 배제)
+  - [x] `move_base_on` 우선 적용 시 `nav_on` 자동 비활성화
+- [ ] **P8-7** 검증: move_base 노드 기동 확인
+- [ ] **P8-8** 검증: global/local costmap 표시 확인
+- [ ] **P8-9** 검증: RViz 2D Nav Goal → 로봇 이동 확인
+- [ ] **P8-10** 검증: `rostopic echo /move_base/result` SUCCESS 확인
 
 ## Phase 9: 튜닝 및 통합
 

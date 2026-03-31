@@ -12,7 +12,7 @@
   사용 예:
     roslaunch woosh_navigation_mb navigation.launch \
       robot_ip:=169.254.128.2 \
-      map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
+      map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.yaml
 
   검증:
     rostopic echo /move_base/result
@@ -106,7 +106,7 @@
     <rosparam file="$(find woosh_navigation_mb)/config/local_planner_params.yaml"
               command="load" />
 
-    <!-- cmd_vel → Woosh SDK (cmd_vel_adapter가 없을 때 직접 연결 시 remap) -->
+    <!-- /cmd_vel은 woosh_service_driver.py의 SmoothTwistController passthrough가 소비한다. -->
     <!-- <remap from="cmd_vel" to="/cmd_vel" /> -->
   </node>
 
