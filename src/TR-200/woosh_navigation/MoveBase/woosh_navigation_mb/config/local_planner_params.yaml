@@ -10,12 +10,12 @@ DWAPlannerROS:
   # 속도 한계 (cmd_vel_adapter의 클리핑 값과 일치)
   # --------------------------------------------------------------
   max_vel_x: 0.10             # m/s — 실내 안전을 위해 최대(0.12)보다 약간 낮게
-  min_vel_x: 0.01             # m/s — 너무 낮으면 정지 판단 지연
+  min_vel_x: 0.03             # m/s — 너무 낮으면 정지 판단 지연
   max_vel_y: 0.0              # m/s — 차동 구동은 측면 이동 불가
   min_vel_y: 0.0
 
   max_vel_trans: 0.10         # m/s — 합성 병진 속도 한계
-  min_vel_trans: 0.01
+  min_vel_trans: 0.03
 
   max_vel_theta: 0.5          # rad/s — cmd_vel_adapter max_angular와 동일
   min_vel_theta: 0.01         # rad/s — 미세 각도 보정 허용 (0.05→0.01: 불감대 제거)
@@ -39,12 +39,12 @@ DWAPlannerROS:
   # --------------------------------------------------------------
   # 시뮬레이션 파라미터
   # --------------------------------------------------------------
-  sim_time: 2.0               # 초 — 예측 시간 (짧으면 근시안적, 길면 계산 부하)
+  sim_time: 1.5               # 초 — 예측 시간 (짧으면 근시안적, 길면 계산 부하)
   sim_granularity: 0.025      # m — 경로 샘플링 해상도
   angular_sim_granularity: 0.025  # rad
 
   # 속도 샘플 수 (DWA 탐색 공간)
-  vx_samples: 6
+  vx_samples: 8
   vy_samples: 1               # 차동 구동: y 샘플 1개
   vtheta_samples: 20
 
@@ -52,13 +52,13 @@ DWAPlannerROS:
   # 목표 허용 오차
   # --------------------------------------------------------------
   xy_goal_tolerance: 0.15     # m — 위치 오차 허용 (TR-200 odometry 정확도 고려)
-  yaw_goal_tolerance: 0.15    # rad (~8.6도) — 최종 방향 오차 허용
-  latch_xy_goal_tolerance: false  # true면 xy 도달 후 방향만 맞춤
+  yaw_goal_tolerance: 0.20    # rad (~8.6도) — 최종 방향 오차 허용
+  latch_xy_goal_tolerance: true  # true면 xy 도달 후 방향만 맞춤
 
   # --------------------------------------------------------------
   # 전진/후진 허용
   # --------------------------------------------------------------
-  forward_point_distance: 0.325   # m — 로봇 전방 참조점 (TR-200 길이/2)
+  forward_point_distance: 0.22   # m — 로봇 전방 참조점 (TR-200 길이/2)
 
   # --------------------------------------------------------------
   # 비용 가중치
@@ -87,13 +87,13 @@ DWAPlannerROS:
   #     angular 포화 빈도를 근본적으로 줄이는 것이 최우선
   # --------------------------------------------------------------
   path_distance_bias: 8.0     # 전역 경로 추종 강도 (32.0→22.0→14.0→8.0: localization 노이즈 내성)
-  goal_distance_bias: 52.0    # 목표 접근 강도 (44.0→52.0: path 감소분 보완)
-  occdist_scale: 0.2          # 장애물 회피 강도
+  goal_distance_bias: 40.0    # 목표 접근 강도 (44.0→52.0: path 감소분 보완)
+  occdist_scale: 0.35          # 장애물 회피 강도
 
   # --------------------------------------------------------------
   # 정지 판단
   # --------------------------------------------------------------
-  stop_time_buffer: 0.2       # 초 — 장애물 전 정지 여유 시간
+  stop_time_buffer: 0.25        # 초 — 장애물 전 정지 여유 시간
   oscillation_reset_dist: 0.15  # m — 진동 카운터 초기화 이동 거리
                                 #     (0.05→0.15: 합성 오도메트리 부정확 보완,
                                 #      가짜 oscillation 감지로 인한 clearing_rotation 복구 방지)
