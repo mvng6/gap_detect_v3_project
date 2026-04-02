@@ -53,6 +53,12 @@
   <!-- 센서 브릿지 기동 여부 (woosh_service_driver와 함께 실행 시 false) -->
   <arg name="launch_sensor_bridge" default="true" />
 
+  <!-- costmap YAML 경로 오버라이드 -->
+  <arg name="costmap_common_params_file"
+       default="$(find woosh_costmap)/config/costmap_common_params.yaml" />
+  <arg name="global_costmap_params_file"
+       default="$(find woosh_costmap)/config/global_costmap_params.yaml" />
+
   <!-- RViz 실행 여부 -->
   <arg name="launch_rviz"          default="true" />
   <arg name="rviz_config"          default="$(find woosh_costmap)/rviz/costmap_debug.rviz" />
@@ -129,10 +135,10 @@
     <remap from="~costmap/costmap_updates" to="~costmap_updates" />
     <remap from="~costmap/footprint"       to="~footprint" />
     <!-- 공통 파라미터 (footprint, observation_sources) -->
-    <rosparam file="$(find woosh_costmap)/config/costmap_common_params.yaml"
+    <rosparam file="$(arg costmap_common_params_file)"
               command="load" ns="costmap" />
     <!-- Global Costmap 전용 파라미터 (update rate, layers 등) -->
-    <rosparam file="$(find woosh_costmap)/config/global_costmap_params.yaml"
+    <rosparam file="$(arg global_costmap_params_file)"
               command="load" ns="costmap" />
     <!-- 프레임 이름 오버라이드 -->
     <param name="costmap/global_frame"      value="$(arg map_frame)" />

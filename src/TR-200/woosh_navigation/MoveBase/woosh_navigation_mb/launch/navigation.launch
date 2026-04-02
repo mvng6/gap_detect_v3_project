@@ -1,5 +1,14 @@
 <?xml version="1.0"?>
 <!--
+  ⚠️  DEPRECATED — navigation.launch
+  ============================================================
+  이 파일은 레거시 전용입니다. 새 워크플로에서는 사용하지 마세요.
+  권장 대체 방법:
+    roslaunch woosh_bringup woosh_navigation_system.launch \
+      localization_mode:=amcl navigation_mode:=move_base \
+      map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
+  ============================================================
+
   navigation.launch — Woosh TR-200 완전 Navigation 스택
   ============================================================
   포함 스택:

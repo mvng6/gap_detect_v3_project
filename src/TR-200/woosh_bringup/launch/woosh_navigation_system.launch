@@ -1,0 +1,142 @@
+<?xml version="1.0"?>
+<!--
+  woosh_navigation_system.launch — Woosh TR-200 정식 Navigation 진입점
+  ============================================================
+  단일 roslaunch 명령으로 전체 내비게이션 스택을 구성합니다.
+  woosh_service_driver.py가 모든 서브스택의 런타임 오케스트레이터 역할을 합니다.
+
+  기본 예시 (AMCL + move_base):
+    roslaunch woosh_bringup woosh_navigation_system.launch \
+      localization_mode:=amcl navigation_mode:=move_base \
+      map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
+
+  Cartographer fix + move_base:
+    roslaunch woosh_bringup woosh_navigation_system.launch \
+      localization_mode:=carto_fix navigation_mode:=move_base \
+      state_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.pbstream \
+      map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
+
+  GMapping + move_base (SLAM + nav):
+    roslaunch woosh_bringup woosh_navigation_system.launch \
+      slam_mode:=gmapping navigation_mode:=move_base
+
+  Cartographer SLAM + move_base:
+    roslaunch woosh_bringup woosh_navigation_system.launch \
+      slam_mode:=cartographer navigation_mode:=move_base
+
+  커스텀 플래너:
+    roslaunch woosh_bringup woosh_navigation_system.launch \
+      localization_mode:=amcl navigation_mode:=move_base \
+      map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml \
+      global_planner_plugin:=global_planner/GlobalPlanner \
+      global_planner_params_file:=/abs/path/to/global_planner.yaml
+  ============================================================
+-->
+<launch>
+
+  <!-- ============================================================
+       로봇 연결 설정
+       ============================================================ -->
+  <arg name="robot_ip"                   default="169.254.128.2" />
+  <arg name="robot_port"                 default="5480" />
+  <arg name="robot_identity"             default="navigation_system" />
+
+  <!-- ============================================================
+       모드 선택
+         slam_mode:         none | gmapping | cartographer
+         localization_mode: none | amcl | carto_fix | carto_nonfix
+         navigation_mode:   none | costmap | move_base
+       ============================================================ -->
+  <arg name="slam_mode"                  default="none" />
+  <arg name="localization_mode"          default="none" />
+  <arg name="navigation_mode"            default="none" />
+
+  <!-- ============================================================
+       맵 소스 (localization 또는 carto_nonfix+nav 시 필요)
+       ============================================================ -->
+  <arg name="map_file"                   default="" />   <!-- .yaml — map_server용 -->
+  <arg name="state_file"                 default="" />   <!-- .pbstream — cartographer loc용 -->
+
+  <!-- ============================================================
+       시각화
+       ============================================================ -->
+  <arg name="launch_rviz"                default="true" />
+  <arg name="rviz_config"                default="" />   <!-- 비어 있으면 자동 선택 -->
+
+  <!-- ============================================================
+       플래너 선택 (navigation_mode:=move_base 시에만 적용)
+       ============================================================ -->
+  <arg name="global_planner_plugin"      default="navfn/NavfnROS" />
+  <arg name="local_planner_plugin"       default="dwa_local_planner/DWAPlannerROS" />
+
+  <!-- ============================================================
+       플래너/코스트맵 YAML 경로 오버라이드
+       ============================================================ -->
+  <arg name="move_base_params_file"
+       default="$(find woosh_navigation_mb)/config/move_base_params.yaml" />
+  <arg name="costmap_common_params_file"
+       default="$(find woosh_costmap)/config/costmap_common_params.yaml" />
+  <arg name="global_costmap_params_file"
+       default="$(find woosh_costmap)/config/global_costmap_params.yaml" />
+  <arg name="local_costmap_params_file"
+       default="$(find woosh_navigation_mb)/config/local_costmap_params.yaml" />
+  <arg name="global_planner_params_file"
+       default="$(find woosh_navigation_mb)/config/global_planner_params.yaml" />
+  <arg name="local_planner_params_file"
+       default="$(find woosh_navigation_mb)/config/local_planner_params.yaml" />
+  <arg name="load_global_planner_params" default="true" />
+  <arg name="load_local_planner_params"  default="true" />
+
+  <!-- ============================================================
+       타임아웃 오버라이드
+       ============================================================ -->
+  <arg name="nav_prerequisites_timeout"  default="30.0" />
+  <arg name="costmap_ready_timeout"      default="20.0" />
+
+  <!-- ============================================================
+       mobile_move_server 노드
+       모든 args를 private param (~)으로 전달합니다.
+       woosh_service_driver.py가 런타임 오케스트레이터 역할을 합니다.
+       ============================================================ -->
+  <node pkg="woosh_bringup" type="woosh_service_driver.py"
+        name="mobile_move_server" output="screen" required="true">
+
+    <!-- 로봇 연결 -->
+    <param name="robot_ip"                   value="$(arg robot_ip)" />
+    <param name="robot_port"                 value="$(arg robot_port)" />
+    <param name="robot_identity"             value="$(arg robot_identity)" />
+
+    <!-- 모드 -->
+    <param name="slam_mode"                  value="$(arg slam_mode)" />
+    <param name="localization_mode"          value="$(arg localization_mode)" />
+    <param name="navigation_mode"            value="$(arg navigation_mode)" />
+
+    <!-- 맵 소스 -->
+    <param name="map_file"                   value="$(arg map_file)" />
+    <param name="state_file"                 value="$(arg state_file)" />
+
+    <!-- 시각화 -->
+    <param name="launch_rviz"                value="$(arg launch_rviz)" />
+    <param name="rviz_config"                value="$(arg rviz_config)" />
+
+    <!-- 플래너 -->
+    <param name="global_planner_plugin"      value="$(arg global_planner_plugin)" />
+    <param name="local_planner_plugin"       value="$(arg local_planner_plugin)" />
+
+    <!-- YAML 경로 -->
+    <param name="move_base_params_file"      value="$(arg move_base_params_file)" />
+    <param name="costmap_common_params_file" value="$(arg costmap_common_params_file)" />
+    <param name="global_costmap_params_file" value="$(arg global_costmap_params_file)" />
+    <param name="local_costmap_params_file"  value="$(arg local_costmap_params_file)" />
+    <param name="global_planner_params_file" value="$(arg global_planner_params_file)" />
+    <param name="local_planner_params_file"  value="$(arg local_planner_params_file)" />
+    <param name="load_global_planner_params" value="$(arg load_global_planner_params)" />
+    <param name="load_local_planner_params"  value="$(arg load_local_planner_params)" />
+
+    <!-- 타임아웃 -->
+    <param name="nav_prerequisites_timeout"  value="$(arg nav_prerequisites_timeout)" />
+    <param name="costmap_ready_timeout"      value="$(arg costmap_ready_timeout)" />
+
+  </node>
+
+</launch>

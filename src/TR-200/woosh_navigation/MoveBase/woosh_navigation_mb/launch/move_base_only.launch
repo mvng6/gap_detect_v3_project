@@ -11,11 +11,30 @@
   이 파일은 woosh_service_driver.py의 move_base_on 플래그에서
   자동으로 호출됩니다. 직접 실행 시:
     roslaunch woosh_navigation_mb move_base_only.launch
+
+  플래너 주입 예시 (woosh_navigation_system.launch에서 자동 전달):
+    roslaunch woosh_navigation_mb move_base_only.launch \
+      global_planner_plugin:=global_planner/GlobalPlanner \
+      global_planner_params_file:=/abs/path/to/global_planner.yaml
 -->
 <launch>
   <arg name="map_frame"  default="map" />
   <arg name="odom_frame" default="odom" />
   <arg name="base_frame" default="base_link" />
+
+  <!-- 플래너 선택 -->
+  <arg name="global_planner_plugin"      default="navfn/NavfnROS" />
+  <arg name="local_planner_plugin"       default="dwa_local_planner/DWAPlannerROS" />
+
+  <!-- YAML 경로 오버라이드 -->
+  <arg name="move_base_params_file"      default="$(find woosh_navigation_mb)/config/move_base_params.yaml" />
+  <arg name="costmap_common_params_file" default="$(find woosh_costmap)/config/costmap_common_params.yaml" />
+  <arg name="global_costmap_params_file" default="$(find woosh_costmap)/config/global_costmap_params.yaml" />
+  <arg name="local_costmap_params_file"  default="$(find woosh_navigation_mb)/config/local_costmap_params.yaml" />
+  <arg name="global_planner_params_file" default="$(find woosh_navigation_mb)/config/global_planner_params.yaml" />
+  <arg name="local_planner_params_file"  default="$(find woosh_navigation_mb)/config/local_planner_params.yaml" />
+  <arg name="load_global_planner_params" default="true" />
+  <arg name="load_local_planner_params"  default="true" />
 
   <!-- ============================================================
        move_base — 전역/지역 경로 계획 + 속도 명령 발행
@@ -25,35 +44,38 @@
   <node pkg="move_base" type="move_base" name="move_base"
         respawn="false" output="screen">
 
-    <param name="base_global_planner" value="navfn/NavfnROS" />
-    <param name="base_local_planner"  value="dwa_local_planner/DWAPlannerROS" />
+    <!-- 플래너 플러그인 주입 -->
+    <param name="base_global_planner" value="$(arg global_planner_plugin)" />
+    <param name="base_local_planner"  value="$(arg local_planner_plugin)" />
 
     <!-- move_base 공통 파라미터 -->
-    <rosparam file="$(find woosh_navigation_mb)/config/move_base_params.yaml"
-              command="load" />
+    <rosparam file="$(arg move_base_params_file)" command="load" />
 
     <!-- Global Costmap (woosh_costmap 공유) -->
-    <rosparam file="$(find woosh_costmap)/config/costmap_common_params.yaml"
+    <rosparam file="$(arg costmap_common_params_file)"
               command="load" ns="global_costmap" />
-    <rosparam file="$(find woosh_costmap)/config/global_costmap_params.yaml"
+    <rosparam file="$(arg global_costmap_params_file)"
               command="load" ns="global_costmap" />
     <param name="global_costmap/global_frame"     value="$(arg map_frame)" />
     <param name="global_costmap/robot_base_frame" value="$(arg base_frame)" />
 
     <!-- Local Costmap -->
-    <rosparam file="$(find woosh_costmap)/config/costmap_common_params.yaml"
+    <rosparam file="$(arg costmap_common_params_file)"
               command="load" ns="local_costmap" />
-    <rosparam file="$(find woosh_navigation_mb)/config/local_costmap_params.yaml"
+    <rosparam file="$(arg local_costmap_params_file)"
               command="load" ns="local_costmap" />
     <param name="local_costmap/global_frame"     value="$(arg odom_frame)" />
     <param name="local_costmap/robot_base_frame" value="$(arg base_frame)" />
 
-    <!-- Global Planner (navfn/Dijkstra) -->
-    <rosparam file="$(find woosh_navigation_mb)/config/global_planner_params.yaml"
+    <!-- Global Planner 파라미터 (조건부 로드)
+         네임스페이스 주의: navfn/NavfnROS → move_base/NavfnROS/... -->
+    <rosparam if="$(arg load_global_planner_params)"
+              file="$(arg global_planner_params_file)"
               command="load" />
 
-    <!-- Local Planner (DWA) -->
-    <rosparam file="$(find woosh_navigation_mb)/config/local_planner_params.yaml"
+    <!-- Local Planner 파라미터 (조건부 로드) -->
+    <rosparam if="$(arg load_local_planner_params)"
+              file="$(arg local_planner_params_file)"
               command="load" />
 
   </node>
