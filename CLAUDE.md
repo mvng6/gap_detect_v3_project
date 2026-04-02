@@ -4,233 +4,174 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ROS1 Noetic robotics project integrating a **Doosan collaborative arm robot** with a **Woosh TR-200 mobile robot** for a gap detection system. The project runs inside a Docker container (Ubuntu + ROS Noetic) on a NUC host.
+ROS1 Noetic robotics project integrating a **Doosan A0912 collaborative arm** with a **Woosh TR-200 mobile robot** for a gap detection system. Runs inside a Docker container on a NUC host.
 
 - **Maintainer**: LDJ (djlee2@katech.re.kr) @ KATECH
 - **ROS Version**: ROS1 Noetic (not ROS2)
 - **Build System**: Catkin (CMake-based)
+- All ROS commands run **inside the Docker container** at `/root/catkin_ws/`
 
 ## Docker Environment
 
-All development and execution happens inside the Docker container.
-
 ```bash
-# Allow X11 access for GUI (RViz/Gazebo)
+# Host (one-time)
 xhost +local:docker
-
-# Start container
 docker-compose -f docker-compose.noetic_integration.yml up -d
 
 # Enter container
 docker exec -it noetic_robot_system_ws bash
-
-# Inside container — source workspace
 source /root/catkin_ws/devel/setup.bash
 ```
 
-The `src/` directory is volume-mounted into the container at `/root/catkin_ws/src/`.
+`src/` is volume-mounted into the container at `/root/catkin_ws/src/`.
 
 ## Build Commands
 
-Run inside the container at `/root/catkin_ws/`:
-
 ```bash
-# Install dependencies
+# Full build
 rosdep install --from-paths src --ignore-src -r -y
-
-# Build all packages
 catkin config --cmake-args -DCMAKE_BUILD_TYPE=Release
 catkin build
 
-# Build a single package
+# Single package
 catkin build <package_name>
 
-# Source after build
+# Re-source after build
 source devel/setup.bash
 ```
 
 ## Launch Commands
 
+### Canonical mobile robot entry point
+
+`woosh_navigation_system.launch` is the single official launch file. It passes all args as ROS params to `woosh_service_driver.py`, which orchestrates subprocess stacks at runtime.
+
 ```bash
-# Woosh mobile robot — RViz visualization/debug
-roslaunch woosh_bringup woosh_rviz_debug.launch robot_ip:=169.254.128.2
+# Base only (/mobile_move service)
+roslaunch woosh_bringup woosh_navigation_system.launch
 
-# Doosan arm — virtual mode (no real robot required)
-roslaunch dsr_launcher single_robot_rviz.launch model:=a0912 mode:=virtual
+# AMCL + move_base
+roslaunch woosh_bringup woosh_navigation_system.launch \
+  localization_mode:=amcl navigation_mode:=move_base \
+  map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
 
-# Doosan arm — combined Gazebo + RViz simulation
-roslaunch dsr_launcher single_robot_rviz_gazebo.launch model:=a0912 mode:=virtual
+# Cartographer fixed map + move_base
+roslaunch woosh_bringup woosh_navigation_system.launch \
+  localization_mode:=carto_fix navigation_mode:=move_base \
+  state_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.pbstream \
+  map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
 
-# Doosan arm — real robot
-roslaunch dsr_launcher single_robot_rviz.launch model:=a0912 mode:=real server_ip:=192.168.137.100
-
-# Run main coordination node (requires both robots connected)
-rosrun main_command main_system_operation.py
+# GMapping SLAM + move_base (map-while-navigate)
+roslaunch woosh_bringup woosh_navigation_system.launch \
+  slam_mode:=gmapping navigation_mode:=move_base
 ```
 
-## Doosan Emulator (for development without real robot)
+Key args: `slam_mode` (`none`|`gmapping`|`cartographer`), `localization_mode` (`none`|`amcl`|`carto_fix`|`carto_nonfix`), `navigation_mode` (`none`|`costmap`|`move_base`), `map_file`, `state_file`, `launch_rviz` (default `true`), `global_planner_plugin`, `local_planner_plugin`, `nav_prerequisites_timeout` (default `30.0`).
+
+**Constraint**: `slam_mode` and `localization_mode` are mutually exclusive — `_validate_modes()` enforces this.
+
+### Doosan arm
 
 ```bash
-# Install emulator (one-time)
-cd src/doosan-robot/doosan_robot && ./install_emulator.sh
+# Virtual (no real robot)
+roslaunch dsr_launcher single_robot_rviz.launch model:=a0912 mode:=virtual
 
-# Run emulator (listens on 127.0.0.1:12345)
+# Real robot
+roslaunch dsr_launcher single_robot_rviz.launch model:=a0912 mode:=real server_ip:=192.168.137.100
+
+# Emulator (127.0.0.1:12345) — install once, then run
+cd src/doosan-robot/doosan_robot && ./install_emulator.sh
 cd src/doosan-robot/common/bin/DRCF && ./run_drcf.sh
 ```
 
-## SLAM (Map Building)
-
-Two SLAM approaches are available for building maps with the Woosh TR-200:
+### Integration
 
 ```bash
-# GMapping SLAM
-roslaunch woosh_slam_gmapping gmapping.launch robot_ip:=169.254.128.2
-
-# Cartographer SLAM
-roslaunch woosh_slam_cartographer cartographer.launch robot_ip:=169.254.128.2
-
-# Save map (while SLAM is running, in a separate terminal)
-roslaunch woosh_slam_gmapping save_map.launch map_name:=my_map
-roslaunch woosh_slam_cartographer save_map.launch map_name:=my_map
+rosrun main_command main_system_operation.py   # both robots must be up
 ```
 
-Maps are saved to `src/TR-200/woosh_slam/maps/` (container path: `/root/catkin_ws/src/TR-200/woosh_slam/maps/`).
-
-## Localization (AMCL — requires an existing map)
+### SLAM / Map building
 
 ```bash
-roslaunch woosh_slam_amcl amcl.launch \
-  robot_ip:=169.254.128.2 \
-  map_file:=/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml
+# GMapping
+roslaunch woosh_slam_gmapping gmapping.launch robot_ip:=169.254.128.2
+roslaunch woosh_slam_gmapping save_map.launch map_name:=woosh_map
 
-# Generate map file from robot (if none exists yet)
+# Cartographer
+roslaunch woosh_slam_cartographer cartographer.launch robot_ip:=169.254.128.2
+roslaunch woosh_slam_cartographer save_map.launch map_name:=woosh_map
+
+# Export map from robot's internal store
 rosrun woosh_slam_amcl export_map.py _robot_ip:=169.254.128.2
 ```
 
-Map files (`.pgm` + `.yaml`) are stored in `src/TR-200/woosh_slam/maps/` and accessible inside the container at `/root/catkin_ws/src/TR-200/woosh_slam/maps/`.
-
-## Cartographer Localization (alternative to AMCL)
-
-Cartographer can also be used for localization against a previously-built `.pbstream` map:
-
-```bash
-# Fixed map (no submap updates, similar to AMCL)
-rosrun woosh_bringup woosh_service_driver.py carto_loc_fix
-
-# Non-fixed (submap updates enabled)
-rosrun woosh_bringup woosh_service_driver.py carto_loc_nonfix
-```
-
-Requires a `.pbstream` file in `src/TR-200/woosh_slam/maps/`.
+Maps are saved to `src/TR-200/woosh_slam/maps/` (`.pgm` + `.yaml`; Cartographer also produces `.pbstream`).
 
 ## Architecture
 
-### Package Structure
-
-```
-src/
-├── main_command/                   # Top-level coordination (Python)
-├── cartographer_src/               # Git submodules: cartographer + cartographer_ros
-├── doosan-robot/                   # Doosan arm packages (C++ + Python)
-│   ├── dsr_control/                # Hardware interface (C++)
-│   ├── dsr_msgs/                   # 100+ ROS service/message definitions
-│   ├── dsr_description/            # URDF/Xacro models
-│   ├── dsr_launcher/               # Launch files
-│   ├── dsr_gazebo/                 # Gazebo worlds
-│   ├── dsr_example/                # Example scripts
-│   └── moveit_config_*/            # MoveIt configs (one per robot model)
-└── TR-200/                         # Woosh mobile robot packages (Python)
-    ├── woosh_robot_py/             # WebSocket SDK wrapper
-    ├── woosh_sensor_bridge/        # SDK sensor bridge (/scan, /odom, TF)
-    ├── woosh_bringup/              # ROS nodes + launch files
-    ├── woosh_msgs/                 # Custom service definitions
-    ├── woosh_utils/                # Utility scripts (battery, etc.)
-    ├── woosh_slam/                 # SLAM packages
-    │   ├── GMapping/woosh_slam_gmapping/
-    │   └── Cartographer/woosh_slam_cartographer/
-    ├── woosh_navigation/
-    │   └── AMCL/                   # AMCL localization (woosh_slam_amcl)
-    └── woosh_control/              # Placeholder
-```
-
-### Communication Architecture
+### Communication
 
 ```
 main_command
-├── /dsr01a0912/motion/move_joint  → dsr_control (C++ node → TCP → Doosan arm)
-└── /mobile_move                   → woosh_service_driver (Python → WebSocket → Woosh TR-200)
+├── /dsr01a0912/motion/move_joint ──► dsr_control (C++) ──► Doosan A0912  [TCP 192.168.137.100:12345]
+└── /mobile_move ──────────────────► woosh_service_driver (Python) ──► Woosh TR-200  [WS 169.254.128.2:5480]
 ```
 
-- **Doosan**: TCP port 12345 (real: 192.168.137.100, virtual: 127.0.0.1)
-- **Woosh**: WebSocket at 169.254.128.2:5480, protobuf-serialized messages
-
-### Sensor Data Flow (SLAM / Localization)
+### Sensor data flow
 
 ```
-woosh_sensor_bridge.py  →  /scan (LaserScan), /odom, TF(odom→base_link)
+woosh_sensor_bridge.py  →  /scan, /odom, TF(odom→base_link)
                                 ↓
-SLAM node (gmapping / cartographer / amcl)  →  TF(map→odom)
-                                ↓
-/map (OccupancyGrid)
+SLAM/AMCL node  →  TF(map→odom), /map
 ```
 
-`woosh_sensor_bridge.py` translates raw Woosh robot WebSocket data (LiDAR, odometry) into standard ROS topics. It is launched automatically by the SLAM/AMCL launch files.
+`woosh_sensor_bridge.py` always runs (launched as a subprocess by `woosh_service_driver.py` in every mode). SLAM/AMCL launch files accept `launch_sensor_bridge:=false` to avoid duplicate start when called from `woosh_service_driver.py`.
 
-### woosh_service_driver.py Modes
+### woosh_service_driver.py internal structure
 
-The driver accepts CLI flags to launch additional stacks alongside the `/mobile_move` service:
+The file is the runtime orchestrator for the entire mobile robot stack. Key classes:
 
-| Flag | Command | Usage |
-|------|---------|-------|
-| *(none)* | `rosrun woosh_bringup woosh_service_driver.py` | `/mobile_move` service only |
-| `rviz_on` | `rosrun woosh_bringup woosh_service_driver.py rviz_on` | + RViz visualization |
-| `gmap` | `rosrun woosh_bringup woosh_service_driver.py gmap` | + GMapping SLAM |
-| `carto_map` | `rosrun woosh_bringup woosh_service_driver.py carto_map` | + Cartographer SLAM (mapping) |
-| `carto_loc_fix` | `rosrun woosh_bringup woosh_service_driver.py carto_loc_fix` | + Cartographer localization (fixed map, AMCL-like) |
-| `carto_loc_nonfix` | `rosrun woosh_bringup woosh_service_driver.py carto_loc_nonfix` | + Cartographer localization (submap updates) |
-| `amcl` | `rosrun woosh_bringup woosh_service_driver.py amcl map_file:=/path/to/map.yaml` | + AMCL localization (requires map file) |
-| `amcl nav_on` | `rosrun woosh_bringup woosh_service_driver.py amcl nav_on map_file:=...` | + AMCL + Global Costmap standalone (costmap_2d_node) |
-| `amcl move_base_on` | `rosrun woosh_bringup woosh_service_driver.py amcl move_base_on map_file:=...` | + AMCL + move_base 자율 내비게이션 (navfn + DWA + cmd_vel_adapter) |
-| `carto_loc_fix move_base_on` | `rosrun woosh_bringup woosh_service_driver.py carto_loc_fix move_base_on state_file:=...` | + Cartographer(fixed) + move_base 자율 내비게이션 |
+| Class | Role |
+|-------|------|
+| `StackLauncher` | Manages subprocess lifecycle (sensor_bridge, SLAM, AMCL, costmap, move_base, RViz). Calls `SubprocessManager` internally. Has `wait_for_nav_prerequisites()` (waits for `/map` + TF `map→odom` before launching move_base) and `wait_for_costmap_ready()`. |
+| `SmoothTwistController` | Implements `/mobile_move` service. Drives the robot via quintic minimum-jerk profile over WebSocket. Also handles `cmd_vel` passthrough for move_base integration (`enable_cmd_vel_passthrough()`). Odometry is twist-integrated (SDK provides no wheel encoders). |
+| `SubprocessManager` | Launches/monitors named `roslaunch` subprocesses, restarts on crash. |
+| `NavCsvLogger` | Logs `/cmd_vel` and SDK twist commands to CSV for post-analysis. |
 
-### Key Source Files
+`main()` flow: read ROS params (set by `woosh_navigation_system.launch`) → fall back to legacy CLI flags → translate to `slam_mode/localization_mode/navigation_mode` → `_validate_modes()` → start `StackLauncher` stacks in order → spin.
+
+### Key source files
 
 | File | Role |
 |------|------|
-| `src/main_command/scripts/main_system_operation.py` | Top-level orchestration: drives Doosan through A/B/C measurement points, interleaved with mobile robot moves |
-| `src/TR-200/woosh_bringup/scripts/woosh_service_driver.py` | ROS service adapter for Woosh (implements `/mobile_move` via `SmoothTwistController`) |
-| `src/TR-200/woosh_bringup/scripts/woosh_rviz_debug.py` | RViz visualization node for Woosh |
-| `src/TR-200/woosh_robot_py/woosh_robot.py` | Async WebSocket SDK for Woosh robot |
-| `src/TR-200/woosh_sensor_bridge/scripts/woosh_sensor_bridge.py` | Converts Woosh WebSocket sensor data to ROS `/scan`, `/odom`, and TF |
-| `src/doosan-robot/dsr_control/src/dsr_hw_interface.cpp` | Doosan hardware abstraction layer |
+| `src/main_command/scripts/main_system_operation.py` | Top-level sequence: Doosan A/B/C measurement points interleaved with `/mobile_move` calls |
+| `src/TR-200/woosh_bringup/scripts/woosh_service_driver.py` | Mobile robot orchestrator + `/mobile_move` service |
+| `src/TR-200/woosh_sensor_bridge/scripts/woosh_sensor_bridge.py` | WebSocket → `/scan`, `/odom`, TF |
+| `src/TR-200/woosh_robot_py/woosh_robot.py` | Async WebSocket SDK |
+| `src/TR-200/woosh_bringup/launch/woosh_navigation_system.launch` | Canonical launch entry point |
+| `src/TR-200/woosh_navigation/MoveBase/woosh_navigation_mb/config/` | move_base, costmap, planner YAML configs |
 
-### Custom ROS Services
+### Custom ROS services
 
-**`/mobile_move`** (`woosh_msgs/MoveMobile`):
-- Request: `float32 distance` (meters; negative = backward)
-- Response: `bool success`, `string message`
+- **`/mobile_move`** (`woosh_msgs/MoveMobile`): `float32 distance` [m, negative=backward] → `bool success, string message`
+- **`/dsr01a0912/motion/move_joint`** (`dsr_msgs/MoveJoint`): joint-space motion (absolute degrees, model a0912)
+- **`/dsr01a0912/motion/move_tcp`** (`dsr_msgs/MoveTcp`): Cartesian motion
 
-**Doosan motion services** (namespace `dsr01a0912`):
-- `motion/MoveJoint` — joint-space motion
-- `motion/MoveTcp` — Cartesian motion
-- 100+ additional services in `dsr_msgs/srv/`
+### TF tree
 
-### Gap Detection Sequence (main_system_operation.py)
+```
+map → odom → base_link → laser
+```
+- `odom→base_link`: published by `woosh_sensor_bridge.py` (twist-integrated odometry, `transform_tolerance: 0.5s`)
+- `base_link→laser`: static transform (z=0.25 m), published by `StackLauncher.start_base_laser_tf()`
+- `map→odom`: published by SLAM or AMCL node
 
-The full measurement sequence (currently partially commented out — only A-points active):
-1. Doosan → HOME position
-2. Doosan traverses A-points (3 measurement poses)
-3. Doosan → HOME
-4. Mobile robot moves forward 0.3 m
-5. *(commented)* Doosan traverses B-points (4 poses), mobile moves +0.6 m, C-points (5 poses), mobile returns −0.9 m
+### Default file paths (inside container)
 
-Joint positions are defined as absolute degree values for model **a0912**.
-
-### Supported Doosan Robot Models
-
-a0509, a0912, e0509, h2017, h2515, m0609, m0617, m1013, m1509
-
-The project primarily uses **a0912**.
+```
+/root/catkin_ws/src/TR-200/woosh_slam/maps/woosh_map.yaml         # AMCL map
+/root/catkin_ws/src/TR-200/woosh_slam/maps/carto_woosh_map.pbstream  # Cartographer state
+```
 
 ## Python Dependencies (woosh_robot_py)
 
@@ -240,3 +181,7 @@ websockets==12.0
 typing-extensions>=4.0.0
 python-dateutil>=2.8.2
 ```
+
+## Supported Doosan Models
+
+a0509, **a0912**, e0509, h2017, h2515, m0609, m0617, m1013, m1509 — project uses **a0912**.
